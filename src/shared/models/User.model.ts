@@ -59,7 +59,7 @@ const UserSchema = new Schema(
     geoBlocked: { type: Boolean, default: false, index: true },
     ageVerified: { type: Boolean, default: false },
     blocked: {
-      isBlocked: { type: Boolean, default: false, index: true },
+      isBlocked: { type: Boolean, default: false },
       reason: String,
       at: Date,
       by: { type: Types.ObjectId, ref: 'AdminUser' },

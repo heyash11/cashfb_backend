@@ -133,7 +133,7 @@ Full detail with acceptance criteria in `docs/BUILD_PLAN.md`. Summary:
 | Phase | Focus                                                          | Days |
 | ----- | -------------------------------------------------------------- | ---- |
 | 0     | Scaffolding, Docker, CI, env validation, bare boot             | 0.5  |
-| 1     | All 26 Mongoose models + repositories + KMS envelope           | 1.5  |
+| 1     | All 27 Mongoose models + repositories + KMS envelope           | 1.5  |
 | 2     | Auth: OTP, JWT access/refresh, device binding, RBAC            | 1.5  |
 | 3     | Coins, posts, votes with atomic transactions                   | 1    |
 | 4     | Redeem codes: bulk upload, publish, FCFS copy                  | 1    |

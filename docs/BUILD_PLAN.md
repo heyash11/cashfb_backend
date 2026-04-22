@@ -33,7 +33,7 @@ Strict phase-by-phase execution order. Each phase ships green on `pnpm test && p
 
 ## Phase 1 — Data layer (1.5 day)
 
-**Goal:** All 26 Mongoose models exist with indexes, repositories return lean objects, KMS envelope helpers work.
+**Goal:** All 27 Mongoose models exist with indexes, repositories return lean objects, KMS envelope helpers work.
 
 **Tasks**
 
@@ -47,7 +47,7 @@ Strict phase-by-phase execution order. Each phase ships green on `pnpm test && p
 
 **Acceptance criteria**
 
-- All 26 models importable.
+- All 27 models importable.
 - All unique + compound indexes present (verified by an integration test that checks `db.collection.getIndexes()`).
 - `pnpm seed` creates `app_config` and admin user idempotently.
 - Encryption round-trip test passes: `encrypt(x)` then `decrypt()` returns `x`.
