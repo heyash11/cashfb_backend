@@ -1,12 +1,22 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface CoinTransactionReference {
+  kind?: 'Post' | 'Vote' | 'Admin' | 'System';
+  id?: Types.ObjectId;
+}
+
+export interface CoinTransactionAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  userId: Types.ObjectId;
+  type: 'SIGNUP_BONUS' | 'POST_REWARD' | 'VOTE_SPEND' | 'ADMIN_CREDIT' | 'ADMIN_DEBIT' | 'REFUND';
+  amount: number; // +ve credit, -ve debit
+  balanceAfter: number;
+  reference?: CoinTransactionReference;
+  note?: string;
+}
 
 const CoinTransactionSchema = new Schema(
   {
@@ -30,7 +40,6 @@ const CoinTransactionSchema = new Schema(
 
 CoinTransactionSchema.index({ userId: 1, createdAt: -1 }); // paginated coin history
 
-export type CoinTransactionAttrs = InferSchemaType<typeof CoinTransactionSchema>;
 export type CoinTransactionDoc = HydratedDocument<CoinTransactionAttrs>;
 export const CoinTransactionModel: Model<CoinTransactionAttrs> = model<CoinTransactionAttrs>(
   'CoinTransaction',

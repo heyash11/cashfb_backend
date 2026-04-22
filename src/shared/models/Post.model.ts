@@ -1,12 +1,27 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface PostAdsConfig {
+  topBannerKey?: string;
+  bottomBannerKey?: string;
+}
+
+export interface PostAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  title: string;
+  description?: string;
+  dayKey: string; // 'YYYY-MM-DD' IST
+  scheduledAt: Date;
+  status: 'DRAFT' | 'SCHEDULED' | 'LIVE' | 'CLOSED';
+  coinReward: number;
+  tierRequired: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+  adsConfig?: PostAdsConfig;
+  createdBy: Types.ObjectId;
+  publishedAt?: Date;
+  closedAt?: Date;
+}
 
 const PostSchema = new Schema(
   {
@@ -39,7 +54,6 @@ const PostSchema = new Schema(
 
 PostSchema.index({ dayKey: 1, status: 1, scheduledAt: 1 }); // daily feed
 
-export type PostAttrs = InferSchemaType<typeof PostSchema>;
 export type PostDoc = HydratedDocument<PostAttrs>;
 export const PostModel: Model<PostAttrs> = model<PostAttrs>('Post', PostSchema, 'posts');
 export { PostSchema };

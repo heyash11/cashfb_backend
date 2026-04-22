@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { ConflictError, UnauthorizedError } from '../../shared/errors/AppError.js';
+import type { OtpVerificationAttrs } from '../../shared/models/OtpVerification.model.js';
 import { OtpVerificationRepository } from '../../shared/repositories/OtpVerification.repository.js';
 import type { LockoutStore } from './lockout.store.js';
 import type { OtpSendInput, OtpSender, OtpService, OtpVerifyInput } from './otp.types.js';
@@ -68,8 +69,7 @@ export class OtpServiceImpl implements OtpService {
     const salt = randomBytes(HASH_SALT_BYTES).toString('hex');
     const otpHash = hashOtp(otp, salt);
 
-    // TODO(schema-types): drop `as unknown as ...` after #15.
-    await this.repo.create({
+    const row: Partial<OtpVerificationAttrs> = {
       channel: 'SMS',
       destination: input.phone,
       otpHash,
@@ -78,9 +78,10 @@ export class OtpServiceImpl implements OtpService {
       maxAttempts: MAX_ATTEMPTS,
       purpose: input.purpose,
       ipAddress: input.ipAddress,
-      deviceFingerprint: input.deviceFingerprint ?? undefined,
       expiresAt: new Date(Date.now() + OTP_TTL_SEC * 1000),
-    } as unknown as Partial<Parameters<typeof this.repo.create>[0]>);
+    };
+    if (input.deviceFingerprint) row.deviceFingerprint = input.deviceFingerprint;
+    await this.repo.create(row);
 
     await this.sender.send(input.phone, otp, input.purpose);
   }
@@ -118,25 +119,13 @@ export class OtpServiceImpl implements OtpService {
 
     const provided = hashOtp(input.otp, salt);
     if (provided !== expectedHash) {
-      // TODO(schema-types): remove `_id` cast site.
-      const rowId = (row as unknown as { _id: unknown })._id;
-      await this.repo.updateOne(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { _id: rowId as any },
-        { $inc: { attempts: 1 } },
-      );
+      await this.repo.updateOne({ _id: row._id }, { $inc: { attempts: 1 } });
       await this.recordFailAndMaybeLock(input.phone);
       throw new UnauthorizedError('Invalid OTP');
     }
 
     // Success: flip consumedAt, clear phone-level fail counter.
-    // TODO(schema-types): remove `_id` cast site.
-    const rowId = (row as unknown as { _id: unknown })._id;
-    await this.repo.updateOne(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { _id: rowId as any },
-      { $set: { consumedAt: new Date() } },
-    );
+    await this.repo.updateOne({ _id: row._id }, { $set: { consumedAt: new Date() } });
     await this.lockoutStore.clearFails(input.phone);
   }
 

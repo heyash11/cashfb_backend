@@ -1,12 +1,18 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface DeviceFingerprintAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  fingerprint: string;
+  androidId?: string;
+  imeiHash?: string; // NEVER raw IMEI
+  firstSeenUserId?: Types.ObjectId;
+  linkedUserIds: Types.ObjectId[];
+  suspiciousScore: number;
+  blocked: boolean;
+}
 
 const DeviceFingerprintSchema = new Schema(
   {
@@ -23,7 +29,6 @@ const DeviceFingerprintSchema = new Schema(
 
 DeviceFingerprintSchema.index({ blocked: 1 }); // anti-fraud scan
 
-export type DeviceFingerprintAttrs = InferSchemaType<typeof DeviceFingerprintSchema>;
 export type DeviceFingerprintDoc = HydratedDocument<DeviceFingerprintAttrs>;
 export const DeviceFingerprintModel: Model<DeviceFingerprintAttrs> = model<DeviceFingerprintAttrs>(
   'DeviceFingerprint',

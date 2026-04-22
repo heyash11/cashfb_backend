@@ -1,12 +1,26 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface AuditLogResource {
+  kind?: string;
+  id?: Types.ObjectId;
+}
+
+export interface AuditLogAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  actorId: Types.ObjectId;
+  actorEmail?: string;
+  action: string;
+  resource?: AuditLogResource;
+  /** Snapshot of the resource before the admin action; shape varies per kind. */
+  before?: Record<string, unknown>;
+  /** Snapshot of the resource after the admin action; shape varies per kind. */
+  after?: Record<string, unknown>;
+  ip?: string;
+  userAgent?: string;
+}
 
 const AuditLogSchema = new Schema(
   {
@@ -29,7 +43,6 @@ AuditLogSchema.index({ createdAt: -1 }); // chronological sweep + retention cuto
 AuditLogSchema.index({ actorId: 1, createdAt: -1 }); // per-actor audit
 AuditLogSchema.index({ 'resource.kind': 1, 'resource.id': 1 }); // per-resource audit
 
-export type AuditLogAttrs = InferSchemaType<typeof AuditLogSchema>;
 export type AuditLogDoc = HydratedDocument<AuditLogAttrs>;
 export const AuditLogModel: Model<AuditLogAttrs> = model<AuditLogAttrs>(
   'AuditLog',

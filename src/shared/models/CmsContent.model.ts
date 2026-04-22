@@ -1,12 +1,15 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface CmsContentAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  key: 'TERMS' | 'HOW_DISTRIBUTE' | 'FAQ' | 'PRIVACY' | 'GRIEVANCE';
+  html?: string;
+  version: number;
+  updatedBy?: Types.ObjectId;
+}
 
 const CmsContentSchema = new Schema(
   {
@@ -23,7 +26,6 @@ const CmsContentSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type CmsContentAttrs = InferSchemaType<typeof CmsContentSchema>;
 export type CmsContentDoc = HydratedDocument<CmsContentAttrs>;
 export const CmsContentModel: Model<CmsContentAttrs> = model<CmsContentAttrs>(
   'CmsContent',

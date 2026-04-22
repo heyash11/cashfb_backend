@@ -1,5 +1,23 @@
-import { Schema, model, type HydratedDocument, type InferSchemaType, type Model } from 'mongoose';
+import { Schema, model, type HydratedDocument, type Model, type Types } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface PrizePoolAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  dayKey: string;
+  yesterdayVoteCount: number;
+  baseRate: number; // paise per vote
+  totalPool: number; // paise
+  giftCodeBudget?: number; // 70%
+  customRoomBudget?: number; // 30%
+  proMultiplier: number;
+  proMaxMultiplier: number;
+  status: 'CALCULATED' | 'PUBLISHED' | 'CLOSED';
+  calculatedAt?: Date;
+  publishedAt?: Date;
+  closedAt?: Date;
+}
 
 const PrizePoolSchema = new Schema(
   {
@@ -24,7 +42,6 @@ const PrizePoolSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type PrizePoolAttrs = InferSchemaType<typeof PrizePoolSchema>;
 export type PrizePoolDoc = HydratedDocument<PrizePoolAttrs>;
 export const PrizePoolModel: Model<PrizePoolAttrs> = model<PrizePoolAttrs>(
   'PrizePool',

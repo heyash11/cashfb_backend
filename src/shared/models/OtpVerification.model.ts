@@ -1,5 +1,22 @@
-import { Schema, model, type HydratedDocument, type InferSchemaType, type Model } from 'mongoose';
+import { Schema, model, type HydratedDocument, type Model, type Types } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface OtpVerificationAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  channel: 'SMS' | 'EMAIL';
+  destination: string;
+  otpHash: string; // NEVER plaintext
+  salt?: string;
+  attempts: number;
+  maxAttempts: number;
+  purpose?: 'SIGNUP' | 'LOGIN' | 'PHONE_CHANGE' | 'EMAIL_CHANGE';
+  ipAddress?: string;
+  deviceFingerprint?: string;
+  consumedAt?: Date;
+  expiresAt: Date;
+}
 
 const OtpVerificationSchema = new Schema(
   {
@@ -24,7 +41,6 @@ const OtpVerificationSchema = new Schema(
 OtpVerificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 }); // TTL auto-cleanup
 OtpVerificationSchema.index({ destination: 1, createdAt: -1 }); // latest OTP for phone/email
 
-export type OtpVerificationAttrs = InferSchemaType<typeof OtpVerificationSchema>;
 export type OtpVerificationDoc = HydratedDocument<OtpVerificationAttrs>;
 export const OtpVerificationModel: Model<OtpVerificationAttrs> = model<OtpVerificationAttrs>(
   'OtpVerification',

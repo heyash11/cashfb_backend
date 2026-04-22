@@ -1,12 +1,33 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface SubscriptionPaymentAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  subscriptionId: Types.ObjectId;
+  userId: Types.ObjectId;
+  razorpayPaymentId: string;
+  razorpayOrderId?: string;
+  razorpayInvoiceId?: string;
+  amount?: number; // paise, total incl. GST
+  baseAmount?: number;
+  gstAmount?: number;
+  cgst?: number;
+  sgst?: number;
+  igst?: number;
+  placeOfSupply?: string; // ISO 3166-2:IN state code
+  sacCode: string;
+  merchantGstin?: string;
+  customerGstin?: string;
+  invoiceNumber?: string;
+  invoicePdfUrl?: string; // S3 key
+  method?: string; // card, upi, netbanking
+  status?: 'CAPTURED' | 'FAILED' | 'REFUNDED' | 'PARTIAL_REFUND';
+  capturedAt?: Date;
+  refundedAt?: Date;
+  refundAmount?: number;
+}
 
 const SubscriptionPaymentSchema = new Schema(
   {
@@ -45,7 +66,6 @@ const SubscriptionPaymentSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type SubscriptionPaymentAttrs = InferSchemaType<typeof SubscriptionPaymentSchema>;
 export type SubscriptionPaymentDoc = HydratedDocument<SubscriptionPaymentAttrs>;
 export const SubscriptionPaymentModel: Model<SubscriptionPaymentAttrs> =
   model<SubscriptionPaymentAttrs>(

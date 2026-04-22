@@ -1,5 +1,27 @@
-import { Schema, model, type HydratedDocument, type InferSchemaType, type Model } from 'mongoose';
+import { Schema, model, type HydratedDocument, type Model, type Types } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface AdminUserTwoFactor {
+  enabled: boolean;
+  secret?: string; // TOTP, encrypted at rest
+  recoveryCodes: string[];
+}
+
+export interface AdminUserAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  email: string;
+  passwordHash: string;
+  name?: string;
+  role: 'SUPER_ADMIN' | 'CONTENT_ADMIN' | 'PAYMENT_ADMIN' | 'SUPPORT_ADMIN';
+  permissions: string[];
+  twoFactor: AdminUserTwoFactor;
+  ipAllowlist: string[];
+  lastLoginAt?: Date;
+  lastLoginIp?: string;
+  disabled: boolean;
+}
 
 const AdminUserSchema = new Schema(
   {
@@ -15,7 +37,7 @@ const AdminUserSchema = new Schema(
     permissions: { type: [String], default: [] },
     twoFactor: {
       enabled: { type: Boolean, default: false },
-      secret: String, // TOTP, encrypted via envelope helper at rest
+      secret: String,
       recoveryCodes: { type: [String], default: [] },
     },
     ipAllowlist: { type: [String], default: [] },
@@ -26,7 +48,6 @@ const AdminUserSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type AdminUserAttrs = InferSchemaType<typeof AdminUserSchema>;
 export type AdminUserDoc = HydratedDocument<AdminUserAttrs>;
 export const AdminUserModel: Model<AdminUserAttrs> = model<AdminUserAttrs>(
   'AdminUser',

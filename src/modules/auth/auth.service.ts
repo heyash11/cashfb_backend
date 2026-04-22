@@ -15,6 +15,7 @@ import {
   signRefreshToken,
   verifyRefreshToken,
 } from '../../shared/jwt/signer.js';
+import type { LoginSessionAttrs } from '../../shared/models/LoginSession.model.js';
 import type { UserAttrs } from '../../shared/models/User.model.js';
 import { CoinTransactionRepository } from '../../shared/repositories/CoinTransaction.repository.js';
 import { DeviceFingerprintRepository } from '../../shared/repositories/DeviceFingerprint.repository.js';
@@ -67,57 +68,6 @@ const SUSPICIOUS_SCORE_BUMP = 10;
 function maskPhone(phone: string): string {
   if (phone.length <= 7) return '****';
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
-}
-
-/**
- * Pull `_id` off a lean Mongoose row.
- *
- * Widened to `unknown` because Mongoose 8's `InferSchemaType` does not
- * attach `_id` to the derived attrs type. All lean reads from the
- * repo carry an ObjectId in practice — cast once here so callers
- * don't sprinkle assertions.
- *
- * TODO(schema-types): Remove this helper after OPEN_DECISIONS #15
- * lands; explicit interfaces will expose `_id: Types.ObjectId` on
- * every *Attrs type and callers can access `row._id` directly.
- */
-function leanId(row: unknown): Types.ObjectId {
-  if (!row || typeof row !== 'object') {
-    throw new InternalError('INVARIANT', 'lean row is not an object');
-  }
-  const id = (row as { _id?: unknown })._id;
-  if (!id) {
-    throw new InternalError('INVARIANT', 'lean row missing _id');
-  }
-  return id as Types.ObjectId;
-}
-
-/**
- * Strict shape of what `verifySignupOtp` actually writes into the
- * users collection. We use this instead of `Partial<UserAttrs>` to
- * sidestep InferSchemaType's quirky output for ObjectId refs in
- * Mongoose 8 (which produces a class-metadata shape, not `ObjectId`).
- *
- * TODO(schema-types): Remove this local interface after
- * OPEN_DECISIONS #15 lands. Hand-written `UserAttrs` will accept
- * `Types.ObjectId` for `referredBy` directly.
- */
-interface SignupUserInput {
-  phone: string;
-  dob: Date;
-  declaredState: string;
-  coinBalance: number;
-  totalCoinsEarned: number;
-  signupBonusGranted: boolean;
-  tier: 'PUBLIC';
-  primaryDeviceFingerprint: string;
-  lastLoginIp: string;
-  lastLoginAt: Date;
-  referralCode: string;
-  consentVersion: string;
-  consentAcceptedAt: Date;
-  privacyPolicyVersion: string;
-  referredBy?: Types.ObjectId;
 }
 
 export class AuthService {
@@ -206,7 +156,7 @@ export class AuthService {
     let referredBy: Types.ObjectId | undefined;
     if (input.referralCode) {
       const referrer = await this.userRepo.findByReferralCode(input.referralCode);
-      if (referrer) referredBy = leanId(referrer);
+      if (referrer) referredBy = referrer._id;
     }
 
     const referralCode = await this.pickUniqueReferralCode();
@@ -249,7 +199,7 @@ export class AuthService {
     referredBy: Types.ObjectId | undefined,
   ): Promise<{ user: AuthedUserDto; tokens: AuthTokens }> {
     // 1. Create user with signup bonus applied atomically.
-    const userData: SignupUserInput = {
+    const userData: Partial<UserAttrs> = {
       phone: input.phone,
       dob: input.dob,
       declaredState: input.declaredState,
@@ -269,8 +219,7 @@ export class AuthService {
 
     let userDoc;
     try {
-      // TODO(schema-types): remove `as unknown as Partial<UserAttrs>` after #15.
-      userDoc = await this.userRepo.create(userData as unknown as Partial<UserAttrs>, { session });
+      userDoc = await this.userRepo.create(userData, { session });
     } catch (err) {
       if (isDuplicateKeyError(err)) {
         throw new ConflictError('PHONE_ALREADY_REGISTERED', 'This phone is already registered');
@@ -278,11 +227,9 @@ export class AuthService {
       throw err;
     }
 
-    const userId = leanId(userDoc);
+    const userId = userDoc._id;
 
     // 2. Corresponding coin_transactions SIGNUP_BONUS row.
-    // TODO(schema-types): remove cast after #15 (CoinTransactionAttrs
-    // will accept Types.ObjectId for userId + reference.id directly).
     await this.coinTxRepo.create(
       {
         userId,
@@ -291,7 +238,7 @@ export class AuthService {
         balanceAfter: SIGNUP_BONUS_COINS,
         reference: { kind: 'System' },
         note: 'signup bonus',
-      } as unknown as Partial<Parameters<typeof this.coinTxRepo.create>[0]>,
+      },
       { session },
     );
 
@@ -391,7 +338,7 @@ export class AuthService {
       throw new InternalError('INVARIANT', 'user has invalid tier');
     }
 
-    const userId = leanId(user);
+    const userId = user._id;
     const tokens = await this.issueTokensAndSession({
       userId,
       tier: userTier,
@@ -487,7 +434,7 @@ export class AuthService {
       throw new InternalError('INVARIANT', 'user has invalid tier');
     }
 
-    const userId = leanId(user);
+    const userId = user._id;
     const mongoSession = await mongoose.startSession();
     /**
      * Concurrency note: when two refreshes race with the same token,
@@ -591,10 +538,7 @@ export class AuthService {
     if (links.length === 0) return;
 
     // Any linked user blocked? If yes, propagate block to new signup.
-    // TODO(schema-types): remove `(links as unknown[])` + `String(id)`
-    // after #15. `linkedUserIds` will be typed `Types.ObjectId[]`.
-    const linkedIds = (links as unknown[]).map((id) => String(id));
-    const linkedUsers = await Promise.all(linkedIds.map((id) => this.userRepo.findById(id)));
+    const linkedUsers = await Promise.all(links.map((id) => this.userRepo.findById(id)));
     if (linkedUsers.some((u) => u?.blocked?.isBlocked)) {
       throw new ForbiddenError('DEVICE_BLOCKED', 'Device is linked to a blocked account');
     }
@@ -631,7 +575,7 @@ export class AuthService {
     const access = await signAccessToken({ sub, tier: input.tier, jti });
     const refresh = await signRefreshToken({ sub, jti, family });
 
-    const sessionData: Record<string, unknown> = {
+    const sessionData: Partial<LoginSessionAttrs> = {
       userId: input.userId,
       jti,
       deviceId: input.deviceId,
@@ -642,13 +586,11 @@ export class AuthService {
       expiresAt: new Date(Date.now() + REFRESH_TTL_SEC * 1000),
     };
     if (input.deviceFingerprint) {
-      sessionData['deviceFingerprint'] = input.deviceFingerprint;
+      sessionData.deviceFingerprint = input.deviceFingerprint;
     }
 
     const writeOpts = session ? { session } : {};
-    // TODO(schema-types): remove eslint-disable + `as any` after #15.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await this.sessionRepo.create(sessionData as any, writeOpts);
+    await this.sessionRepo.create(sessionData, writeOpts);
 
     return { access, refresh, accessExpiresIn: ACCESS_TTL_SEC };
   }

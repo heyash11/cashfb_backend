@@ -1,5 +1,19 @@
-import { Schema, model, type HydratedDocument, type InferSchemaType, type Model } from 'mongoose';
+import { Schema, model, type HydratedDocument, type Model, type Types } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface BrandSponsorAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  slot: number;
+  imageUrl: string;
+  linkUrl?: string;
+  title?: string;
+  priority: number;
+  startAt?: Date;
+  endAt?: Date;
+  status: 'ACTIVE' | 'PAUSED' | 'EXPIRED';
+}
 
 const BrandSponsorSchema = new Schema(
   {
@@ -22,7 +36,6 @@ const BrandSponsorSchema = new Schema(
 
 BrandSponsorSchema.index({ slot: 1, status: 1, priority: -1 }); // home sponsor resolution
 
-export type BrandSponsorAttrs = InferSchemaType<typeof BrandSponsorSchema>;
 export type BrandSponsorDoc = HydratedDocument<BrandSponsorAttrs>;
 export const BrandSponsorModel: Model<BrandSponsorAttrs> = model<BrandSponsorAttrs>(
   'BrandSponsor',

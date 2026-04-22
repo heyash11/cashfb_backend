@@ -1,12 +1,69 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+import type { SocialLinks } from './_shared.js';
+
+export interface UserKyc {
+  status: 'NONE' | 'PENDING' | 'VERIFIED' | 'REJECTED';
+  panCt?: string;
+  panIv?: string;
+  panTag?: string;
+  panDekEnc?: string;
+  panLast4?: string;
+  verifiedAt?: Date;
+}
+
+export interface UserBlocked {
+  isBlocked: boolean;
+  reason?: string;
+  at?: Date;
+  by?: Types.ObjectId;
+}
+
+export interface UserAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+
+  // Schema-level required.
+  phone: string;
+  dob: Date;
+  declaredState: string;
+
+  // Truly optional.
+  email?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  socialLinks?: SocialLinks;
+
+  // Defaulted at schema level → always present on read.
+  coinBalance: number;
+  totalCoinsEarned: number;
+  totalVotesCast: number;
+  signupBonusGranted: boolean;
+  tier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+  geoBlocked: boolean;
+  ageVerified: boolean;
+
+  // Subdocs with inner defaults → subdoc materialised → required.
+  kyc: UserKyc;
+  blocked: UserBlocked;
+
+  // Optional, set over time.
+  lastVoteDate?: string;
+  activeSubscriptionId?: Types.ObjectId;
+  tierExpiresAt?: Date;
+  primaryDeviceFingerprint?: string;
+  lastLoginIp?: string;
+  lastLoginAt?: Date;
+  referredBy?: Types.ObjectId;
+  referralCode?: string;
+
+  // DPDP consent artefact (Phase 2 ambiguity #1). Optional because
+  // pre-Phase-2 test fixtures may not carry them.
+  consentVersion?: string;
+  consentAcceptedAt?: Date;
+  privacyPolicyVersion?: string;
+}
 
 const UserSchema = new Schema(
   {
@@ -74,7 +131,6 @@ const UserSchema = new Schema(
 
     // DPDP consent artefact (captured at signup). Flutter sends
     // current versions in the verify payload; we store for audit.
-    // Ambiguity #1 resolution: three flat nullable fields.
     consentVersion: String,
     consentAcceptedAt: Date,
     privacyPolicyVersion: String,
@@ -87,7 +143,6 @@ UserSchema.index({ declaredState: 1, geoBlocked: 1 }); // geo-block check
 UserSchema.index({ 'blocked.isBlocked': 1 }); // block enforcement
 UserSchema.index({ 'kyc.panLast4': 1 }); // admin PAN search
 
-export type UserAttrs = InferSchemaType<typeof UserSchema>;
 export type UserDoc = HydratedDocument<UserAttrs>;
 export const UserModel: Model<UserAttrs> = model<UserAttrs>('User', UserSchema, 'users');
 export { UserSchema };

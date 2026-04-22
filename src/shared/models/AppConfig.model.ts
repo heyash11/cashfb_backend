@@ -1,5 +1,40 @@
-import { Schema, model, type HydratedDocument, type InferSchemaType, type Model } from 'mongoose';
+import { Schema, model, type HydratedDocument, type Model, type Types } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface AppConfigVoteWindowIst {
+  start: string;
+  end: string;
+}
+
+export interface AppConfigRazorpayPlanIds {
+  PRO?: string;
+  PRO_MAX?: string;
+}
+
+export interface AppConfigAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  key: string;
+  baseRatePerVote: number;
+  signupBonusCoins: number;
+  coinsPerPost: number;
+  coinsPerVote: number;
+  giftCodeDenomination: number;
+  proMultiplier: number;
+  proMaxMultiplier: number;
+  voteWindowIst: AppConfigVoteWindowIst;
+  blockedStates: string[];
+  kycThresholdAmount: number;
+  ageMin: number;
+  maintenanceMode: boolean;
+  /**
+   * Arbitrary feature-flag map. Shape varies by flag name; consumers
+   * narrow at the access site.
+   */
+  featureFlags?: Record<string, unknown>;
+  razorpayPlanIds?: AppConfigRazorpayPlanIds;
+}
 
 const AppConfigSchema = new Schema(
   {
@@ -39,7 +74,6 @@ const AppConfigSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type AppConfigAttrs = InferSchemaType<typeof AppConfigSchema>;
 export type AppConfigDoc = HydratedDocument<AppConfigAttrs>;
 export const AppConfigModel: Model<AppConfigAttrs> = model<AppConfigAttrs>(
   'AppConfig',

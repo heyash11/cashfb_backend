@@ -1,12 +1,28 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface RedeemCodeAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  batchId: Types.ObjectId;
+  denomination: number;
+  // Encrypted at rest (envelope helper).
+  codeCt: string;
+  codeIv?: string;
+  codeTag?: string;
+  codeDekEnc?: string;
+  codeHash: string; // HMAC-SHA256 for dedupe
+  status: 'AVAILABLE' | 'PUBLISHED' | 'COPIED' | 'CLAIMED' | 'EXPIRED' | 'VOID';
+  postId?: Types.ObjectId;
+  publishedAt?: Date;
+  firstCopiedBy?: Types.ObjectId;
+  firstCopiedAt?: Date;
+  copyCount: number;
+  claimedBy?: Types.ObjectId;
+  claimedAt?: Date;
+  voidedReason?: string;
+}
 
 const RedeemCodeSchema = new Schema(
   {
@@ -40,7 +56,6 @@ const RedeemCodeSchema = new Schema(
 RedeemCodeSchema.index({ status: 1, batchId: 1 }); // admin batch view
 RedeemCodeSchema.index({ postId: 1, status: 1 }); // per-post FCFS scan
 
-export type RedeemCodeAttrs = InferSchemaType<typeof RedeemCodeSchema>;
 export type RedeemCodeDoc = HydratedDocument<RedeemCodeAttrs>;
 export const RedeemCodeModel: Model<RedeemCodeAttrs> = model<RedeemCodeAttrs>(
   'RedeemCode',

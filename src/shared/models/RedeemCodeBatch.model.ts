@@ -1,12 +1,20 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface RedeemCodeBatchAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  uploadedBy: Types.ObjectId;
+  supplierName: string; // Xoxoday / Plum / Zaggle / Qwikcilver / Pine Labs
+  supplierInvoiceNumber?: string;
+  supplierInvoiceUrl?: string; // S3 key
+  denomination: number; // paise (₹50 = 5000)
+  count: number;
+  totalValue?: number;
+  notes?: string;
+  status: 'STAGED' | 'LIVE' | 'EXHAUSTED';
+}
 
 const RedeemCodeBatchSchema = new Schema(
   {
@@ -28,7 +36,6 @@ const RedeemCodeBatchSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type RedeemCodeBatchAttrs = InferSchemaType<typeof RedeemCodeBatchSchema>;
 export type RedeemCodeBatchDoc = HydratedDocument<RedeemCodeBatchAttrs>;
 export const RedeemCodeBatchModel: Model<RedeemCodeBatchAttrs> = model<RedeemCodeBatchAttrs>(
   'RedeemCodeBatch',

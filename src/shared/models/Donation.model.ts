@@ -1,12 +1,26 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+import type { SocialLinks } from './_shared.js';
+
+export interface DonationAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  /** null/absent for anonymous donations. */
+  userId?: Types.ObjectId;
+  displayName?: string;
+  isAnonymous: boolean;
+  amount: number; // paise
+  razorpayOrderId: string;
+  razorpayPaymentId?: string;
+  status: 'CREATED' | 'CAPTURED' | 'FAILED' | 'REFUNDED';
+  message?: string;
+  socialLinks?: SocialLinks;
+  capturedAt?: Date;
+  ipAddress?: string;
+  /** Razorpay webhook notes; shape varies per event. */
+  notes?: Record<string, unknown>;
+}
 
 const DonationSchema = new Schema(
   {
@@ -34,7 +48,6 @@ const DonationSchema = new Schema(
 DonationSchema.index({ userId: 1, status: 1, createdAt: -1 }); // user donation history
 DonationSchema.index({ status: 1, amount: -1 }); // top-donor aggregation
 
-export type DonationAttrs = InferSchemaType<typeof DonationSchema>;
 export type DonationDoc = HydratedDocument<DonationAttrs>;
 export const DonationModel: Model<DonationAttrs> = model<DonationAttrs>(
   'Donation',

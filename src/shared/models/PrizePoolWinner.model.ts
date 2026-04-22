@@ -1,12 +1,26 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface PrizePoolWinnerAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  dayKey: string;
+  userId: Types.ObjectId;
+  type: 'GIFT_CODE' | 'CUSTOM_ROOM';
+  tier?: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+  baseAmount?: number;
+  multiplier: number;
+  finalAmount?: number;
+  redeemCodeId?: Types.ObjectId;
+  customRoomId?: Types.ObjectId;
+  tdsDeducted: number; // paise, 30% under 194BA
+  tdsChallanNo?: string;
+  form16aIssuedAt?: Date;
+  panAtPayout?: string; // last-4 masked
+  payoutStatus: 'PENDING' | 'RELEASED' | 'WITHHELD' | 'VOID';
+  releasedAt?: Date;
+}
 
 const PrizePoolWinnerSchema = new Schema(
   {
@@ -48,7 +62,6 @@ PrizePoolWinnerSchema.index(
   { unique: true, partialFilterExpression: { type: 'CUSTOM_ROOM' } },
 );
 
-export type PrizePoolWinnerAttrs = InferSchemaType<typeof PrizePoolWinnerSchema>;
 export type PrizePoolWinnerDoc = HydratedDocument<PrizePoolWinnerAttrs>;
 export const PrizePoolWinnerModel: Model<PrizePoolWinnerAttrs> = model<PrizePoolWinnerAttrs>(
   'PrizePoolWinner',

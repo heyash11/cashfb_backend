@@ -1,4 +1,4 @@
-import { Schema, model, type HydratedDocument, type InferSchemaType, type Model } from 'mongoose';
+import { Schema, model, type HydratedDocument, type Model, type Types } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
 
 /**
@@ -6,6 +6,15 @@ import { baseSchemaOptions } from './_base.js';
  * invoice numbers per FY, keyed as `invoice:<FY>` (see PAYMENTS.md §6).
  * Atomic via findOneAndUpdate({key}, {$inc: {value: 1}}, {upsert: true}).
  */
+
+export interface CounterAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  key: string;
+  value: number;
+}
+
 const CounterSchema = new Schema(
   {
     key: { type: String, required: true, unique: true },
@@ -14,7 +23,6 @@ const CounterSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type CounterAttrs = InferSchemaType<typeof CounterSchema>;
 export type CounterDoc = HydratedDocument<CounterAttrs>;
 export const CounterModel: Model<CounterAttrs> = model<CounterAttrs>(
   'Counter',

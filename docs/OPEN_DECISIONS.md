@@ -234,24 +234,19 @@ The MSG91 adapter is in the codebase and env-gated on `OTP_SENDER=msg91` plus `M
 
 ## 15. Replace InferSchemaType with explicit typed interfaces across all 27 models
 
-**Status:** :yellow_circle: Pending — tracked, not blocking
-**Blocks:** Nothing. Cleanup between phases when no feature work is in flight.
-**Recommended default:** One-hour chore commit.
+**Status:** :green_circle: Closed on 2026-04-22
+**Resolution:** All 27 `*.model.ts` files now export a hand-written `XyzAttrs` interface that includes `_id: Types.ObjectId`, `createdAt` / `updatedAt` where applicable, correctly typed `Types.ObjectId` ref fields, and required-at-schema-level fields typed as `T` (not `T | null | undefined`). Subdocs with inner defaults typed as required; genuinely optional subdocs typed optional. Shared `SocialLinks` extracted to `src/shared/models/_shared.ts`. All nine workaround sites (9 `TODO(schema-types)` markers, the `leanId` helper + 4 call sites, three `as unknown as Partial<…>` casts, the `as any` session-create cast, and the `String(id)` linked-user coercion) removed. Defensive `user.blocked?.isBlocked` null-checks retained as belt-and-braces guards against manual Mongo writes. 97 tests green, zero test-file changes.
+**Implementer:** Claude / Ashhu pair
+**Linked commit:** `chore(models): replace InferSchemaType with explicit interfaces` (local, not yet pushed)
 
-Mongoose 8's `InferSchemaType<typeof XYZSchema>` misbehaves in two places we have hit in Phase 2:
+### Original question
+
+Mongoose 8's `InferSchemaType<typeof XYZSchema>` misbehaves in two places we hit in Phase 2:
 
 1. `_id` is not included in the inferred type, so lean reads fail `.lean<T>()` assignments wherever callers touch `row._id`.
 2. ObjectId `ref` fields (e.g. `users.referredBy`, `device_fingerprints.linkedUserIds[]`) resolve to a class-metadata shape (`{ prototype?: ObjectId; cacheHexString?: ...; ... }`) instead of `Types.ObjectId`.
 
-Every workaround site in the auth module is tagged `TODO(schema-types)`. The refactor:
-
-- Replace `export type XyzAttrs = InferSchemaType<typeof XyzSchema>;` with a hand-written `export interface XyzAttrs { _id: Types.ObjectId; ... }` for each of the 27 models.
-- Remove all `as unknown as Partial<XyzAttrs>` / `String(id)` / `(row as { _id?: unknown })._id` casts added as Phase 2 workarounds.
-- Keep defensive null-checks for required-at-schema-level fields (they guard against manual Mongo writes that bypass typed code).
-
-**Scope:** ~one hour, pure chore commit. Touches all 27 model files + every site currently tagged `TODO(schema-types)`. Do not start mid-phase.
-
-**Action needed:** Schedule between Phase 2 and Phase 3 (or any future inter-phase gap). Zero behavior change expected; coverage of `test/integration/indexes.spec.ts` confirms schemas still compile and indexes still materialise.
+Every workaround site in the auth module was tagged `TODO(schema-types)`. The refactor replaced `export type XyzAttrs = InferSchemaType<typeof XyzSchema>;` with hand-written interfaces and removed all `as unknown as Partial<XyzAttrs>` / `String(id)` / `(row as { _id?: unknown })._id` casts added as Phase 2 workarounds.
 
 ---
 

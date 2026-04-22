@@ -1,19 +1,22 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
 
-/**
- * Ad placement keys:
- *  'home_top_banner', 'timer_top_banner', 'timer_bottom_banner',
- *  'redeem_code_bottom_banner', 'custom_room_bottom_banner',
- *  'result_middle_banner'
- */
+export interface AdsConfigAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  placementKey: string;
+  type: 'BANNER' | 'INTERSTITIAL' | 'REWARDED_VIDEO' | 'NATIVE';
+  network: 'ADMOB' | 'UNITY' | 'APPLOVIN' | 'IRONSOURCE';
+  adUnitIdAndroid?: string;
+  adUnitIdIOS?: string;
+  fallbackAdUnitId?: string;
+  enabled: boolean;
+  minTierToHide: 'NONE' | 'PRO' | 'PRO_MAX';
+  refreshSeconds?: number;
+  updatedBy?: Types.ObjectId;
+}
+
 const AdsConfigSchema = new Schema(
   {
     placementKey: { type: String, required: true, unique: true },
@@ -42,7 +45,6 @@ const AdsConfigSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type AdsConfigAttrs = InferSchemaType<typeof AdsConfigSchema>;
 export type AdsConfigDoc = HydratedDocument<AdsConfigAttrs>;
 export const AdsConfigModel: Model<AdsConfigAttrs> = model<AdsConfigAttrs>(
   'AdsConfig',

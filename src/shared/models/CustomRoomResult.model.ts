@@ -1,12 +1,31 @@
-import {
-  Schema,
-  model,
-  Types,
-  type HydratedDocument,
-  type InferSchemaType,
-  type Model,
-} from 'mongoose';
+import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+
+export interface CustomRoomResultWinner {
+  userId?: Types.ObjectId;
+  prize?: number; // paise
+}
+
+export interface CustomRoomResultBucket {
+  imageUrl?: string; // S3 key
+  squadName?: string;
+  winners: CustomRoomResultWinner[];
+}
+
+export interface CustomRoomResultAttrs {
+  _id: Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+  roomId: Types.ObjectId;
+  inRoomImageUrl?: string;
+  top1?: CustomRoomResultBucket;
+  top2?: CustomRoomResultBucket;
+  top3?: CustomRoomResultBucket;
+  extra?: CustomRoomResultBucket;
+  publishedAt?: Date;
+  visibleFromAt?: Date;
+  publishedBy?: Types.ObjectId;
+}
 
 // Each winner entry inside a bucket. _id: false per ambiguity #5.
 const WinnerEntrySchema = new Schema(
@@ -43,7 +62,6 @@ const CustomRoomResultSchema = new Schema(
   baseSchemaOptions,
 );
 
-export type CustomRoomResultAttrs = InferSchemaType<typeof CustomRoomResultSchema>;
 export type CustomRoomResultDoc = HydratedDocument<CustomRoomResultAttrs>;
 export const CustomRoomResultModel: Model<CustomRoomResultAttrs> = model<CustomRoomResultAttrs>(
   'CustomRoomResult',
