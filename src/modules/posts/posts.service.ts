@@ -103,17 +103,18 @@ export class PostService {
 
   /**
    * Atomic post completion. See docs/BUILD_PLAN.md §Phase 3 +
-   * CONVENTIONS.md §Transactions and punitive writes.
+   * CONVENTIONS.md §Transactions — pitfalls and patterns.
    *
    * Pre-transaction (fast-reject, no writes):
    *   - NotFoundError if post absent.
    *   - ConflictError 'POST_NOT_LIVE' if status != LIVE.
    *   - ForbiddenError 'TIER_REQUIRED' if user tier insufficient.
    *
-   * Transaction:
-   *   1. Insert post_completions via `insertIfAbsent`
-   *      (unique {userId, postId}). Null on duplicate → idempotent
-   *      200 with alreadyCompleted: true, no further writes.
+   * Transaction (pattern 1 per CONVENTIONS.md — upsert to keep the
+   * session alive on the already-completed branch):
+   *   1. Upsert post_completions with $setOnInsert (unique
+   *      {userId, postId}). Null upsertedId → idempotent 200 with
+   *      alreadyCompleted: true, no further writes.
    *   2. $inc users.coinBalance by post.coinReward.
    *   3. Insert coin_transactions POST_REWARD with balanceAfter.
    *   4. Back-link completion.coinTxId.
