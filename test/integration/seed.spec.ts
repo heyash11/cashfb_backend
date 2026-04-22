@@ -1,20 +1,19 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AdminUserModel } from '../../src/shared/models/AdminUser.model.js';
 import { AppConfigModel } from '../../src/shared/models/AppConfig.model.js';
 import { seed } from '../../src/shared/seed/seed.js';
-
-let mongod: MongoMemoryServer;
+import { clearAllCollections, connectTestMongo, disconnectTestMongo } from '../testing/mongo.js';
 
 beforeAll(async () => {
-  mongod = await MongoMemoryServer.create();
-  await mongoose.connect(mongod.getUri());
+  await connectTestMongo();
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongod.stop();
+  await disconnectTestMongo();
+});
+
+beforeEach(async () => {
+  await clearAllCollections();
 });
 
 describe('seed idempotency', () => {

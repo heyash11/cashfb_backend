@@ -25,6 +25,10 @@ Conventions that apply to every line of code in this repository. Read before eve
 - No `.save()` in controllers. Only services call repositories.
 - Never expose Mongoose documents to the HTTP layer. Map to plain DTOs at the service boundary.
 
+### Transactions and punitive writes
+
+When a service method aborts a Mongo transaction by throwing, any writes inside the transaction callback roll back with it. If the throw represents a policy violation that also needs to be recorded or acted upon (audit log, rate limit, family revoke, fraud score), that write MUST happen in the outer scope after the transaction has resolved, not inside the callback that throws. Use a flag returned from the transaction body (e.g. `{ raceDetected: true }`) and branch on it outside.
+
 ---
 
 ## Express

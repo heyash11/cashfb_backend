@@ -71,6 +71,13 @@ const UserSchema = new Schema(
     lastLoginAt: Date,
     referredBy: { type: Types.ObjectId, ref: 'User', index: true },
     referralCode: { type: String, unique: true, sparse: true },
+
+    // DPDP consent artefact (captured at signup). Flutter sends
+    // current versions in the verify payload; we store for audit.
+    // Ambiguity #1 resolution: three flat nullable fields.
+    consentVersion: String,
+    consentAcceptedAt: Date,
+    privacyPolicyVersion: String,
   },
   baseSchemaOptions,
 );

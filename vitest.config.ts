@@ -7,6 +7,11 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
+    /**
+     * One-shot MongoMemoryReplSet boot per test run, shared across
+     * all integration specs via `process.env.TEST_MONGO_URI`.
+     */
+    globalSetup: ['./test/testing/globalSetup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],

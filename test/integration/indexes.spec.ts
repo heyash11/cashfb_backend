@@ -1,9 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import mongoose, { type Model } from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { type Model } from 'mongoose';
 import { MODELS } from '../../src/shared/models/index.js';
-
-let mongod: MongoMemoryServer;
+import { connectTestMongo, disconnectTestMongo } from '../testing/mongo.js';
 
 type IndexKey = Record<string, number | string>;
 interface LiveIndex {
@@ -15,15 +13,13 @@ interface LiveIndex {
 type AnyModel = Model<Record<string, unknown>>;
 
 beforeAll(async () => {
-  mongod = await MongoMemoryServer.create();
-  await mongoose.connect(mongod.getUri());
+  await connectTestMongo();
   // Force index creation on every model so live state reflects declarations.
   await Promise.all(Object.values(MODELS).map((m) => (m as unknown as AnyModel).syncIndexes()));
 }, 120_000);
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongod.stop();
+  await disconnectTestMongo();
 });
 
 function keysEqual(a: IndexKey, b: IndexKey): boolean {
