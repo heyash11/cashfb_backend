@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+.env
+.env.local
+.git
+.github
+.husky
+.vscode
+.idea
+**/*.log
+**/*.spec.ts
+test
+docs
+README.md
+CLAUDE.md
