@@ -25,9 +25,23 @@ Conventions that apply to every line of code in this repository. Read before eve
 - No `.save()` in controllers. Only services call repositories.
 - Never expose Mongoose documents to the HTTP layer. Map to plain DTOs at the service boundary.
 
-### Transactions and punitive writes
+### Transactions — pitfalls and patterns
+
+#### Punitive writes on throw
 
 When a service method aborts a Mongo transaction by throwing, any writes inside the transaction callback roll back with it. If the throw represents a policy violation that also needs to be recorded or acted upon (audit log, rate limit, family revoke, fraud score), that write MUST happen in the outer scope after the transaction has resolved, not inside the callback that throws. Use a flag returned from the transaction body (e.g. `{ raceDetected: true }`) and branch on it outside.
+
+#### Duplicate-key writes inside transactions
+
+A failed write inside a Mongo transaction aborts the session state immediately, regardless of whether the Mongoose layer catches the error. Subsequent reads or writes in the same callback will throw `NoSuchTransaction`, which `withTransaction` reclassifies as `TransientTransactionError` and retries the callback — causing infinite retry loops if the duplicate condition remains.
+
+Repository helpers that swallow duplicate-key errors (`insertIfAbsent`, `findOrCreate`, similar) are safe only OUTSIDE transactions. Inside a transaction, use one of:
+
+1. `updateOne(filter, { $setOnInsert: {...} }, { upsert: true, session })` — branch on `upsertedId` to detect fresh insert vs existing row. No write failure on match. Transaction stays alive. Use this for idempotent "create if missing, continue either way" flows (post-completion, device-fingerprint upsert on login).
+
+2. `insertOne` with intentional throw on duplicate — use when the duplicate case is a user-facing error the service means to signal (vote-already-cast, code-already-copied). The transaction SHOULD abort on duplicate; you're not continuing past it.
+
+Rule: if the service needs to do ANY further work inside the transaction after the potentially-duplicate write, use pattern 1. If the duplicate is the terminal branch (throw and return), pattern 2 is fine.
 
 ---
 
