@@ -247,6 +247,7 @@ app.use(errorHandler);
 | Code                     | HTTP | Meaning                             |
 | ------------------------ | ---- | ----------------------------------- |
 | `VALIDATION_FAILED`      | 400  | Zod schema rejected input           |
+| `INVALID_CURSOR`         | 400  | Pagination cursor is malformed      |
 | `UNAUTHORIZED`           | 401  | Missing/invalid JWT                 |
 | `FORBIDDEN`              | 403  | RBAC denied                         |
 | `INSUFFICIENT_COINS`     | 402  | Balance below required              |

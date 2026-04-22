@@ -120,7 +120,24 @@ cashfb_backend/
 └── tsconfig.json
 ```
 
-Modules (one per feature slice): `auth`, `users`, `home`, `posts`, `post-completions`, `votes`, `coins`, `redeem-codes`, `donations`, `subscriptions`, `sponsors`, `top-donors`, `custom-rooms`, `custom-room-results`, `prize-pools`, `ads-config`, `notifications`, `cms`, `admin`, `webhooks`.
+Modules (one per feature slice). Phase annotations reflect actual build order:
+
+```
+src/modules/
+├── auth/            # Phase 2 (done)
+├── posts/           # Phase 3 (done — includes post-completion logic)
+├── votes/           # Phase 3 (done)
+├── users/           # Phase 3 (only /me/coins; other /me/* endpoints deferred)
+├── redeem-codes/    # Phase 4 (planned)
+├── donations/       # Phase 5 (planned)
+├── subscriptions/   # Phase 5 (planned)
+├── webhooks/        # Phase 5 (planned)
+├── custom-rooms/    # Phase 6 (planned)
+├── prize-pools/     # Phase 6 (planned)
+└── admin/           # Phase 8 (planned)
+```
+
+Additional slices from the original module list (`home`, `coins`, `sponsors`, `top-donors`, `custom-room-results`, `ads-config`, `notifications`, `cms`) fold into the phases above or land as read-only aggregators in Phase 7+.
 
 Two ECS services run from the same image: `api-svc` (server.ts) and `worker-svc` (worker.ts).
 

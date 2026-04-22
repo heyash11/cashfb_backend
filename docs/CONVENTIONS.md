@@ -208,3 +208,35 @@ src/modules/<feature>/
 - Do not introduce new ESLint warnings.
 - Do not commit secrets. `.env` is gitignored. Use `.env.example` for shape.
 - Do not push to main directly. PR required.
+
+---
+
+## Layered defenses
+
+Not every abuse vector deserves a server-side enforcement. Some are cheap enough at the attacker's side that layering a client-only control plus downstream fraud analytics is the correct trade. When deciding whether to add a server-side check, compute the per-incident and per-account cost, then compare against the enforcement cost.
+
+Worked example — post-completion 5-second timer:
+
+- **Attacker cost:** SMS OTP is ₹0.18/account (MSG91 bulk India rate). A fresh account starts with 3 coins and can earn at most ~5 coins/day from post-completion before running out of fresh posts. So the per-account daily exploit ceiling is ~₹0.05 of ad-equivalent reward, against ₹0.18 to create the account. The exploit is not self-funding.
+- **Server enforcement cost:** A Redis-backed "post opened at" timer adds ~100 ms latency to every `POST /posts/:id/complete`, a new Redis key per view, and a new code path to maintain.
+- **Decision:** Client-side-only 5-second timer (UI blocks the complete button for 5 s). The real defense is Phase 7 anti-fraud: device-fingerprint + IP clustering catches multi-account farming, which is where the actual loss scales.
+
+Rule of thumb: if per-account exploit reward < per-account creation cost, prefer a lightweight client control + downstream analytics. Reach for a server-side check only when the exploit is self-funding at scale, or when the write being protected is irreversible (money, prize allocation, vote cast).
+
+---
+
+## Deferred implementations
+
+Some collaborators are needed to _shape_ a service's API (so callers compile, tests run, transactions stay well-factored) but the real implementation belongs in a later phase. Pattern: **interface first, stub in place, real impl behind a later phase swap.**
+
+- Declare the interface in `src/shared/<area>/<Name>.ts`.
+- Ship a `Noop<Name>` or `<Name>Stub` that satisfies the interface with the cheapest possible behavior (returns `undefined`, logs nothing, emits nothing).
+- Register the stub at the awilix composition root so callers depend on the interface, not the stub class.
+- When the real phase lands, swap the registration — no caller changes.
+
+Examples in-tree:
+
+- `OtpServiceStub` (Phase 2) — satisfies the `OtpService` interface via DevConsole until MSG91 wiring lands.
+- `NoopCoinEventEmitter` (Phase 3) — satisfies `CoinEventEmitter` for coin-balance change notifications; Phase 7 swaps in the real Socket.IO emitter.
+
+Rule: if a service needs a collaborator whose real implementation is a phase or two out, do not inline-TODO it and do not skip the seam. Add the interface now so the eventual swap is one line in the container.
