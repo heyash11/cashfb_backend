@@ -1,0 +1,59 @@
+import {
+  Schema,
+  model,
+  Types,
+  type HydratedDocument,
+  type InferSchemaType,
+  type Model,
+} from 'mongoose';
+import { baseSchemaOptions } from './_base.js';
+
+const CustomRoomSchema = new Schema(
+  {
+    game: { type: String, enum: ['BGMI', 'FF'], required: true, index: true },
+    dayKey: { type: String, required: true, index: true },
+    scheduledAt: { type: Date, required: true, index: true },
+
+    // Encrypted at rest (envelope helper). One set per credential.
+    roomIdCt: String,
+    roomIdIv: String,
+    roomIdTag: String,
+    roomIdDekEnc: String,
+    roomPwdCt: String,
+    roomPwdIv: String,
+    roomPwdTag: String,
+    roomPwdDekEnc: String,
+
+    visibleFromAt: Date,
+    resultEnabledAt: Date, // scheduledAt + 30 min
+
+    status: {
+      type: String,
+      enum: ['SCHEDULED', 'LIVE', 'COMPLETED', 'CANCELLED'],
+      default: 'SCHEDULED',
+      index: true,
+    },
+    pageNumber: Number,
+    notice: String,
+    tierRequired: {
+      type: String,
+      enum: ['PUBLIC', 'PRO', 'PRO_MAX'],
+      default: 'PUBLIC',
+    },
+    participantCount: { type: Number, default: 0 },
+    createdBy: { type: Types.ObjectId, ref: 'AdminUser', required: true },
+  },
+  baseSchemaOptions,
+);
+
+CustomRoomSchema.index({ dayKey: 1, game: 1, scheduledAt: 1 }); // daily feed per game
+CustomRoomSchema.index({ status: 1, scheduledAt: 1 }); // status sweep
+
+export type CustomRoomAttrs = InferSchemaType<typeof CustomRoomSchema>;
+export type CustomRoomDoc = HydratedDocument<CustomRoomAttrs>;
+export const CustomRoomModel: Model<CustomRoomAttrs> = model<CustomRoomAttrs>(
+  'CustomRoom',
+  CustomRoomSchema,
+  'custom_rooms',
+);
+export { CustomRoomSchema };
