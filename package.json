@@ -27,7 +27,10 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "^3.1034.0",
     "express": "^5.1.0",
+    "lru-cache": "^11.3.5",
+    "mongoose": "^8.23.0",
     "pino": "^9.5.0",
     "zod": "^4.0.17"
   },
