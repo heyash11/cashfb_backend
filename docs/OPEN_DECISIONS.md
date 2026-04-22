@@ -220,6 +220,41 @@ The `DELETE /me` endpoint (SECURITY.md §10) and the DPDP Act erasure requiremen
 
 ---
 
+## 14. MSG91 DLT template ID + sender ID registration
+
+**Status:** :red_circle: Open
+**Blocks:** Prod launch. Does NOT block Phase 2 development (DevConsole sender ships as the default).
+**Recommended default:** Register a single "login / signup OTP" DLT template with TRAI, plus a DLT-approved 6-char sender ID, and wire both into Secrets Manager.
+
+The MSG91 adapter is in the codebase and env-gated on `OTP_SENDER=msg91` plus `MSG91_AUTH_KEY` / `MSG91_TEMPLATE_ID` / `MSG91_SENDER_ID`. Until a DLT template is registered and approved (TRAI takes ~2 to 7 business days), OTPs cannot legally dispatch to Indian phones from prod — dev and staging use the DevConsole sender which logs the OTP instead of sending.
+
+**Action needed:** Owner completes DLT registration, receives template + sender IDs, stores them in Secrets Manager and SSM. `.env.example` already has the variable names in place.
+
+---
+
+## 15. Replace InferSchemaType with explicit typed interfaces across all 27 models
+
+**Status:** :yellow_circle: Pending — tracked, not blocking
+**Blocks:** Nothing. Cleanup between phases when no feature work is in flight.
+**Recommended default:** One-hour chore commit.
+
+Mongoose 8's `InferSchemaType<typeof XYZSchema>` misbehaves in two places we have hit in Phase 2:
+
+1. `_id` is not included in the inferred type, so lean reads fail `.lean<T>()` assignments wherever callers touch `row._id`.
+2. ObjectId `ref` fields (e.g. `users.referredBy`, `device_fingerprints.linkedUserIds[]`) resolve to a class-metadata shape (`{ prototype?: ObjectId; cacheHexString?: ...; ... }`) instead of `Types.ObjectId`.
+
+Every workaround site in the auth module is tagged `TODO(schema-types)`. The refactor:
+
+- Replace `export type XyzAttrs = InferSchemaType<typeof XyzSchema>;` with a hand-written `export interface XyzAttrs { _id: Types.ObjectId; ... }` for each of the 27 models.
+- Remove all `as unknown as Partial<XyzAttrs>` / `String(id)` / `(row as { _id?: unknown })._id` casts added as Phase 2 workarounds.
+- Keep defensive null-checks for required-at-schema-level fields (they guard against manual Mongo writes that bypass typed code).
+
+**Scope:** ~one hour, pure chore commit. Touches all 27 model files + every site currently tagged `TODO(schema-types)`. Do not start mid-phase.
+
+**Action needed:** Schedule between Phase 2 and Phase 3 (or any future inter-phase gap). Zero behavior change expected; coverage of `test/integration/indexes.spec.ts` confirms schemas still compile and indexes still materialise.
+
+---
+
 ## Template for closing an item
 
 When a decision closes, replace its block with:
