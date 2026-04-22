@@ -1,3 +1,4 @@
+// TODO: Bump to Vitest 4.x once @vitest/coverage-v8@4 stabilises peer-dep range.
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
