@@ -4,7 +4,7 @@ import { DonationService } from './modules/donations/donations.service.js';
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
-import { InvoiceServiceStub } from './shared/invoicing/invoice.stub.js';
+import { InvoiceService } from './shared/invoicing/invoice.service.js';
 
 export function createApp(): Express {
   const app = express();
@@ -26,7 +26,7 @@ export function createApp(): Express {
   // byte sequence — the HMAC then fails. PAYMENTS.md §5.
   const donationService = new DonationService();
   const subscriptionService = new SubscriptionService({
-    invoiceService: new InvoiceServiceStub(),
+    invoiceService: new InvoiceService(),
   });
   const webhookService = new WebhookService({ donationService, subscriptionService });
   app.use('/api/v1', createWebhooksRouter(webhookService));

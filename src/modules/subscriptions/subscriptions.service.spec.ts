@@ -7,8 +7,10 @@ import {
   connectTestMongo,
   disconnectTestMongo,
 } from '../../../test/testing/mongo.js';
-import { InvoiceServiceStub } from '../../shared/invoicing/invoice.stub.js';
-import type { InvoiceService } from '../../shared/invoicing/invoice.types.js';
+import { InvoiceService } from '../../shared/invoicing/invoice.service.js';
+import type { InvoiceService as IInvoiceService } from '../../shared/invoicing/invoice.types.js';
+import { InMemoryObjectStore } from '../../shared/invoicing/object-store.js';
+import { LogOnlyEmailSender } from '../../shared/invoicing/email-sender.js';
 import { AppConfigModel } from '../../shared/models/AppConfig.model.js';
 import { MODELS } from '../../shared/models/index.js';
 import { SubscriptionModel } from '../../shared/models/Subscription.model.js';
@@ -68,8 +70,11 @@ function mkSvc(deps: Partial<ConstructorParameters<typeof SubscriptionService>[0
   fakeRzp: FakeRzpHandles;
 } {
   const fakeRzp = mkFakeRazorpay();
-  const invoiceStub: InvoiceService = new InvoiceServiceStub();
-  const invoiceSpy = vi.fn((input) => invoiceStub.generateInvoice(input));
+  const realInvoice: IInvoiceService = new InvoiceService({
+    objectStore: new InMemoryObjectStore(),
+    emailSender: new LogOnlyEmailSender(),
+  });
+  const invoiceSpy = vi.fn((input) => realInvoice.generateInvoice(input));
   const svc = new SubscriptionService({
     razorpay: fakeRzp.rzp,
     keySecret: KEY_SECRET,
@@ -251,7 +256,7 @@ describe('SubscriptionService webhook: subscription.charged', () => {
     expect(payment?.amount).toBe(5900);
     expect(payment?.status).toBe('CAPTURED');
     // Invoice stub populated the breakdown fields.
-    expect(payment?.invoiceNumber).toMatch(/^CF\/2026-27\/STUB-/);
+    expect(payment?.invoiceNumber).toMatch(/^CF\/2026-27\/\d{6}$/);
     expect(payment?.invoicePdfUrl).toMatch(/^memory:\/\/invoices\//);
     expect(payment?.placeOfSupply).toBe('IN-MH');
 
