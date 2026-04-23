@@ -56,6 +56,10 @@ const EnvSchema = z
     S3_INVOICES_BUCKET: z.string().min(1).optional(),
     SES_FROM_EMAIL: z.string().email().optional(),
     SES_REPLY_TO_EMAIL: z.string().email().optional(),
+
+    BULL_DASHBOARD_PATH: z.string().min(1).default('/admin/queues'),
+    WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
+    BULL_DLQ_NAME: z.string().min(1).default('dlq'),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;
