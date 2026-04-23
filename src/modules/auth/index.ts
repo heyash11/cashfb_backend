@@ -33,5 +33,3 @@ export { DevConsoleSender } from './otp.devconsole.js';
 export { Msg91Sender, type Msg91SenderOptions } from './otp.msg91.js';
 export { createOtpService } from './otp.factory.js';
 export { InMemoryLockoutStore, type LockoutStore, RedisLockoutStore } from './lockout.store.js';
-/** @deprecated Temporary Chunk-2 stub; replaced by OtpServiceImpl in Chunk 3. */
-export { OtpServiceStub } from './otp.service.stub.js';
