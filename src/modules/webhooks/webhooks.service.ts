@@ -2,6 +2,11 @@ import Razorpay from 'razorpay';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import type { DonationService } from '../donations/donations.service.js';
+import type {
+  RazorpayChargedPayload,
+  RazorpaySubPayload,
+  SubscriptionService,
+} from '../subscriptions/subscriptions.service.js';
 import {
   WebhookEventModel,
   type WebhookEventAttrs,
@@ -17,6 +22,7 @@ import {
 
 export interface WebhookServiceDeps {
   donationService?: DonationService;
+  subscriptionService?: SubscriptionService;
   webhookSecret?: string;
   /** Inject a dispatcher spy in tests. Optional — defaults to the
    *  built-in event-type switch. */
@@ -43,12 +49,14 @@ interface RazorpayEventEnvelope {
 
 export class WebhookService {
   private readonly donationService: DonationService | undefined;
+  private readonly subscriptionService: SubscriptionService | undefined;
   private readonly webhookSecret: string;
   private readonly dispatcher: (eventType: string, payload: unknown) => Promise<void>;
   private readonly clock: () => Date;
 
   constructor(deps: WebhookServiceDeps) {
     this.donationService = deps.donationService;
+    this.subscriptionService = deps.subscriptionService;
     this.webhookSecret =
       deps.webhookSecret ?? env.RAZORPAY_WEBHOOK_SECRET ?? 'dev-webhook-secret-placeholder';
     this.dispatcher = deps.dispatcher ?? this.defaultDispatcher.bind(this);
@@ -160,10 +168,8 @@ export class WebhookService {
   }
 
   /**
-   * Default event-type switch. Phase 5 Chunk 1 only wires donation
-   * captured; subscription + refund handlers throw NOT_IMPLEMENTED so
-   * a real Razorpay event in dev fails loudly and Chunk 2 picks them
-   * up.
+   * Default event-type switch. Chunk 2 wires subscription.* via
+   * SubscriptionService; refund.processed still throws until Chunk 4.
    */
   private async defaultDispatcher(eventType: string, payload: unknown): Promise<void> {
     switch (eventType) {
@@ -177,20 +183,44 @@ export class WebhookService {
         );
         return;
       case 'subscription.authenticated':
+        await this.requireSubs().onAuthenticated(payload as RazorpaySubPayload);
+        return;
       case 'subscription.activated':
+        await this.requireSubs().onActivated(payload as RazorpaySubPayload);
+        return;
       case 'subscription.charged':
+        await this.requireSubs().onCharged(payload as RazorpayChargedPayload);
+        return;
       case 'subscription.completed':
+        await this.requireSubs().onCompleted(payload as RazorpaySubPayload);
+        return;
       case 'subscription.cancelled':
+        await this.requireSubs().onCancelled(payload as RazorpaySubPayload);
+        return;
       case 'subscription.halted':
+        await this.requireSubs().onHalted(payload as RazorpaySubPayload);
+        return;
       case 'subscription.paused':
+        await this.requireSubs().onPaused(payload as RazorpaySubPayload);
+        return;
       case 'subscription.resumed':
+        await this.requireSubs().onResumed(payload as RazorpaySubPayload);
+        return;
       case 'subscription.pending':
-        throw new Error(`NOT_IMPLEMENTED: ${eventType} — wired in Phase 5 Chunk 2`);
+        await this.requireSubs().onPending(payload as RazorpaySubPayload);
+        return;
       case 'refund.processed':
         throw new Error('NOT_IMPLEMENTED: refund.processed — wired in Phase 5 Chunk 4');
       default:
         logger.info({ eventType }, 'webhook: unknown event type, ignored');
         return;
     }
+  }
+
+  private requireSubs(): SubscriptionService {
+    if (!this.subscriptionService) {
+      throw new Error('NOT_IMPLEMENTED: subscriptionService not wired');
+    }
+    return this.subscriptionService;
   }
 }
