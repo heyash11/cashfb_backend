@@ -13,6 +13,7 @@ export {
 } from './subscriptions.service.js';
 export { SubscriptionsController } from './subscriptions.controller.js';
 export { createSubscriptionsRouter } from './subscriptions.routes.js';
+export { sweepExpiredTiers, type SweepInput, type SweepResult } from './sweep.service.js';
 export {
   CancelSubscriptionBodySchema,
   CreateSubscriptionBodySchema,

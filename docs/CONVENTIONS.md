@@ -62,6 +62,47 @@ Concrete examples in the codebase:
 
 3. **Multi-level idempotency — WebhookEvent gate PLUS razorpayPaymentId unique** — `src/modules/subscriptions/subscriptions.service.ts` `onCharged()`. The WebhookEvent table guards against duplicate _deliveries_; the `razorpayPaymentId` unique index inside the charged-handler's `withTransaction` guards against duplicate _processing_ of the same payment even if the event-level gate is ever bypassed. Pattern 1 (`updateOne + $setOnInsert + upsert, branch on upsertedId`) detects insert-winner vs. re-run and commits a harmless no-op on the re-run. Defence in depth: the invoice numbering upstream of this handler is irreversible, so losing the race twice would mint a duplicate invoice — two independent predicates prevent it.
 
+4. **Daily prize-pool computation** — `src/modules/prize-pools/prize-pools.service.ts` `computeAndPublishPool()`. `PrizePool` has a unique index on `dayKey`. The pattern-1 upsert (`findOneAndUpdate + $setOnInsert + upsert, rawResult: true`) is the gate: insert-winner returns `{created: true}` with its freshly-computed values; race-loser reads `updatedExisting: true` and returns `{created: false}` with the pre-existing row's values (deterministic re-run semantics — caller sees what the original insert-winner computed, not a fresh compute that could disagree if AppConfig changed between runs). Phase 7's midnight-IST BullMQ cron relies on this for at-least-once delivery safety.
+
+#### Set-operators and counters drift
+
+When a set-modifying operator (`$addToSet`, `$pull`, `$push` with the right flags) may be a no-op AND an `$inc` on a denormalized counter is bundled into the same atomic update, the `$inc` fires regardless of whether the set-op changed anything. Every duplicate call drifts the counter away from the array's actual length.
+
+```ts
+// ✗ WRONG — double-counts on repeat registrations:
+await Room.updateOne(
+  { _id },
+  {
+    $addToSet: { registeredParticipants: userId }, // may no-op
+    $inc: { participantCount: 1 }, // always fires
+  },
+);
+```
+
+Correct pattern: split into two atomic ops. First the set operator with `new: false`, inspect the pre-state array to see whether the set actually modified anything, then conditionally `$inc`.
+
+```ts
+// ✓ Right — $inc only fires on a fresh add.
+const pre = await Room.findOneAndUpdate(
+  { _id, ...cap-and-status-predicates... },
+  { $addToSet: { registeredParticipants: userId } },
+  { new: false },
+);
+if (!pre) { /* disambiguate the 4 failure modes via a follow-up read */ }
+
+const wasAlreadyInSet = pre.registeredParticipants.some(id => String(id) === String(userId));
+if (wasAlreadyInSet) return { alreadyRegistered: true };
+
+await Room.updateOne({ _id }, { $inc: { participantCount: 1 } });
+```
+
+Additional discipline:
+
+- **Prefer computed reads at the boundary.** When a list API can compute the counter from the array (`registeredParticipants.length`), do that instead of reading the denormalized field. The counter is still useful for aggregations / indexed queries where touching the array would be expensive, but user-facing reads should trust the authoritative source.
+- **Six-branch disambiguation for set-op results.** The pre-state inspection replaces a naive pre-read-then-write check. Failure modes collapse into: fresh-add / already-in-set / not-found / wrong-state / cap-full / internal-fallback. Throwing the wrong error code for any of these is a correctness bug — a cap-full room where the user is already registered MUST return `alreadyRegistered: true`, not `ROOM_FULL`.
+
+Concrete in-tree example: `src/modules/custom-rooms/custom-rooms.service.ts` `register()`. Phase 6 Chunk 1 caught the `$addToSet + $inc` drift; the service now performs two atomic ops plus a disambiguation read on the error path.
+
 ---
 
 ## Express

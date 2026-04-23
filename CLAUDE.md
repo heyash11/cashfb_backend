@@ -130,11 +130,11 @@ src/modules/
 ├── users/           # Phase 3 (only /me/coins; other /me/* endpoints deferred)
 ├── redeem-codes/    # Phase 4 (done)
 ├── donations/       # Phase 5 (done)
-├── subscriptions/   # Phase 5 (done)
+├── subscriptions/   # Phase 5 (done — +Phase 6 Chunk 3 tier-expiry sweep primitive)
 ├── webhooks/        # Phase 5 (done)
 ├── refunds/         # Phase 5 (done — Chunk 4)
-├── custom-rooms/    # Phase 6 (planned)
-├── prize-pools/     # Phase 6 (planned)
+├── custom-rooms/    # Phase 6 (done — user + admin; PROGA feature-gated on user paths)
+├── prize-pools/     # Phase 6 (done — daily pool compute primitive; Phase 7 wires the cron)
 └── admin/           # Phase 8 (planned)
 ```
 

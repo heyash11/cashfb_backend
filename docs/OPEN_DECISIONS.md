@@ -35,13 +35,10 @@ The free-entry gift-card contest with ad-funded prizes is defensible as a promot
 
 ## 2. Prize pool base rate
 
-**Status:** :red_circle: Open
-**Blocks:** Phase 6 prize pool cron (mostly cosmetic; default works)
-**Recommended default:** ₹1 per vote (100 paise). Configurable via `app_config.baseRatePerVote`.
-
-With 10,000 daily voters, ~₹10,000 pool next day. Splits as ~₹7,000 gift codes (about 140 codes of ₹50 each) and ~₹3,000 custom-room budget.
-
-**Action needed:** Owner confirms default, or provides an alternative number. Also confirm: is this a permanent default, or should it auto-scale (e.g. `min(votes × 1, ad_revenue × 0.8)`) to avoid paying out more than we earn on a slow day?
+**Status:** :green_circle: Closed on 2026-04-23
+**Resolution:** Shipped Phase 6 with default 100 paise per vote, tuneable via `AppConfig.baseRatePerVote` without redeploy. 70/30 split: `floor(0.7 × total)` for gift codes, remainder for custom rooms (odd-paisa residue absorbed into the custom-room budget, same pattern as SGST in the GST splitter). Auto-scaling against ad revenue deferred — real tuning happens from production data post-launch; the default + override mechanism matters more than the number.
+**Implementer:** `src/modules/prize-pools/prize-pools.service.ts` `computeAndPublishPool`.
+**Linked commit:** `feat(prize-pools): daily pool computation primitive with pattern-1 idempotency` (local, not yet pushed).
 
 ---
 
@@ -62,18 +59,19 @@ If yearly is desired, we create a second Razorpay plan per tier:
 
 ## 4. Multiplier semantics (5x / 10x)
 
-**Status:** :red_circle: Open
-**Blocks:** Phase 6 prize payout module
-**Recommended default:** Option A (multiple codes).
+**Status:** :green_circle: Closed on 2026-04-23
+**Resolution:** Phase 6 ships Option A (multiple-code multiplier). `PrizePoolWinner.multiplier` field semantics: number of codes awarded. PUBLIC×1, PRO×5, PRO_MAX×10 (from `AppConfig.proMultiplier` / `proMaxMultiplier`, defaults locked in code). Refactor path to Option B is available — the multiplier field would shift to represent pool scaling and `PrizePoolService.computeAndPublishPool` would grow pool-per-tier logic. Not a dead end.
+**Implementer:** `src/modules/custom-rooms/custom-rooms.admin.service.ts` `assignWinners`.
+**Linked commit:** `feat(custom-rooms): user + admin services with state-predicated transitions` (local, not yet pushed).
 
-Two possible interpretations:
+### Original question
+
+Two possible interpretations of the 5x / 10x multiplier:
 
 - **Option A:** Pro winner of a ₹50 gift code receives 5 codes worth ₹250 total. Pro Max receives 10 codes worth ₹500.
 - **Option B:** Pro users compete in a separate, larger pool (5x the public pool size).
 
 Architecture supports both via `PrizePoolWinner.multiplier`. UX differs significantly.
-
-**Action needed:** Owner picks A or B. 10-minute call, then locked.
 
 ---
 
@@ -269,6 +267,25 @@ Without domain verification, SES prod sending is rate-limited to the sandbox quo
 5. Move the SES account out of sandbox by opening an AWS support ticket with expected send volume + sample invoice content.
 
 Low-effort (one working day including DNS propagation) but must be done before the first prod subscription charges. Tracked here so prod launch can't accidentally ship with invoice email silently dropping.
+
+---
+
+## 17. KYC + TDS gate on prize-winner claim path (Phase 8)
+
+**Status:** :red_circle: Open
+**Blocks:** Any meaningful prize payout. Phase 6 writes `PrizePoolWinner` rows with `payoutStatus: 'PENDING'` and `tdsDeducted: 0`; redemption of those rows is presently ungated.
+**Recommended default:** Before a winner can redeem a prize (Phase 4 gift-code claim path, any future custom-room payout), the claim endpoint must check KYC status + compute TDS 194BA (30%) above the configured threshold.
+
+Upstream dependency: **OPEN_DECISIONS #6** (KYC threshold) sets the paise-amount above which PAN is required. Until #6 closes, the gate threshold isn't locked.
+
+**Action needed:** Phase 8 admin/claim work must:
+
+1. On every winner-eligible redeem claim, look up the user's `users.kyc.status`.
+2. If cumulative prize value for the FY exceeds `AppConfig.kycThresholdAmount` and `kyc.status !== 'VERIFIED'`, block the claim with `KYC_REQUIRED` (451). User is directed to the PAN-submission flow from Phase 2.
+3. For eligible winners, compute TDS: `tdsDeducted = floor(0.3 × finalAmount)` per TDS 194BA. Write to `PrizePoolWinner.tdsDeducted`, `tdsChallanNo` (assigned by payout worker), `panAtPayout` (last-4 masked), `form16aIssuedAt`.
+4. Payout releases only after TDS row is written (status → `RELEASED`).
+
+Phase 6 Chunk 1 `assignWinners` already persists the winner row with `payoutStatus: 'PENDING'` and all KYC/TDS columns nullable — the schema is ready; the enforcement lives on the claim path. Forward-pointer comment in `custom-rooms.admin.service.ts` documents this.
 
 ---
 
