@@ -7,10 +7,11 @@ import {
   connectTestMongo,
   disconnectTestMongo,
 } from '../../../test/testing/mongo.js';
-import { InvoiceService } from '../../shared/invoicing/invoice.service.js';
-import type { InvoiceService as IInvoiceService } from '../../shared/invoicing/invoice.types.js';
-import { InMemoryObjectStore } from '../../shared/invoicing/object-store.js';
-import { LogOnlyEmailSender } from '../../shared/invoicing/email-sender.js';
+// Phase 7: invoice generation moved to the BullMQ `invoice` queue.
+// Tests spy on the enqueueInvoice dep rather than an InvoiceService
+// instance so we never open Redis and never exercise the PDF/S3/SES
+// pipeline. The invoice worker's own spec covers end-to-end
+// generation.
 import { AppConfigModel } from '../../shared/models/AppConfig.model.js';
 import { MODELS } from '../../shared/models/index.js';
 import { SubscriptionModel } from '../../shared/models/Subscription.model.js';
@@ -66,22 +67,20 @@ function mkFakeRazorpay(subId = 'sub_test_1'): FakeRzpHandles {
 
 function mkSvc(deps: Partial<ConstructorParameters<typeof SubscriptionService>[0]> = {}): {
   svc: SubscriptionService;
-  invoiceSpy: ReturnType<typeof vi.fn> | undefined;
+  enqueueSpy: ReturnType<typeof vi.fn>;
   fakeRzp: FakeRzpHandles;
 } {
   const fakeRzp = mkFakeRazorpay();
-  const realInvoice: IInvoiceService = new InvoiceService({
-    objectStore: new InMemoryObjectStore(),
-    emailSender: new LogOnlyEmailSender(),
-  });
-  const invoiceSpy = vi.fn((input) => realInvoice.generateInvoice(input));
+  const enqueueSpy = vi.fn<(payload: { paymentId: string }) => Promise<void>>(
+    async () => undefined,
+  );
   const svc = new SubscriptionService({
     razorpay: fakeRzp.rzp,
     keySecret: KEY_SECRET,
-    invoiceService: { generateInvoice: invoiceSpy },
+    enqueueInvoice: enqueueSpy,
     ...deps,
   });
-  return { svc, invoiceSpy, fakeRzp };
+  return { svc, enqueueSpy, fakeRzp };
 }
 
 async function seedSubscription(
@@ -220,8 +219,13 @@ describe('SubscriptionService.cancel', () => {
 });
 
 describe('SubscriptionService webhook: subscription.charged', () => {
-  it('creates SubscriptionPayment, increments paidCount, upgrades tier, sets tierExpiresAt, calls InvoiceService', async () => {
-    const { svc, invoiceSpy } = mkSvc();
+  it('creates SubscriptionPayment, increments paidCount, upgrades tier, sets tierExpiresAt, enqueues invoice job', async () => {
+    // Phase 7: invoice generation is async. onCharged enqueues a
+    // BullMQ job instead of running the PDF/S3/SES pipeline inline.
+    // The payment row does NOT have invoiceNumber/invoicePdfUrl
+    // immediately after onCharged — the worker populates those
+    // fields. Test asserts tier + payment + counter + enqueue shape.
+    const { svc, enqueueSpy } = mkSvc();
     const user = await mkUser({ tier: 'PUBLIC' });
     const sub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_charged_1',
@@ -255,10 +259,9 @@ describe('SubscriptionService webhook: subscription.charged', () => {
     expect(payment).toBeTruthy();
     expect(payment?.amount).toBe(5900);
     expect(payment?.status).toBe('CAPTURED');
-    // Invoice stub populated the breakdown fields.
-    expect(payment?.invoiceNumber).toMatch(/^CF\/2026-27\/\d{6}$/);
-    expect(payment?.invoicePdfUrl).toMatch(/^memory:\/\/invoices\//);
-    expect(payment?.placeOfSupply).toBe('IN-MH');
+    // Invoice fields are NOT populated by onCharged — worker does that.
+    expect(payment?.invoiceNumber).toBeUndefined();
+    expect(payment?.invoicePdfUrl).toBeUndefined();
 
     const afterSub = await SubscriptionModel.findById(sub._id);
     expect(afterSub?.paidCount).toBe(2);
@@ -270,11 +273,16 @@ describe('SubscriptionService webhook: subscription.charged', () => {
       new Date(currentEndSec * 1000).toISOString(),
     );
 
-    expect(invoiceSpy).toHaveBeenCalledTimes(1);
+    // enqueueInvoice called once with the new payment's _id
+    // stringified (BullMQ JSON-serializes data; ObjectIds don't
+    // round-trip, so the helper must stringify at the boundary).
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    const [arg] = enqueueSpy.mock.calls[0] ?? [];
+    expect(arg).toEqual({ paymentId: String(payment?._id) });
   });
 
   it('rolls back cleanly when user update fails mid-transaction (no payment row, no paidCount bump, tier unchanged)', async () => {
-    const { svc, invoiceSpy } = mkSvc();
+    const { svc, enqueueSpy } = mkSvc();
     const user = await mkUser({ tier: 'PUBLIC' });
     const sub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_rb_1',
@@ -322,9 +330,9 @@ describe('SubscriptionService webhook: subscription.charged', () => {
     expect(userAfter?.tier).toBe('PUBLIC');
     expect(userAfter?.tierExpiresAt).toBeUndefined();
 
-    // Invoice service never called — we aborted before the external
+    // Enqueue never called — we aborted before the post-transaction
     // side-effect window.
-    expect(invoiceSpy).not.toHaveBeenCalled();
+    expect(enqueueSpy).not.toHaveBeenCalled();
 
     spy.mockRestore();
   });

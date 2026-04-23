@@ -5,7 +5,6 @@ import { RefundService } from './modules/refunds/refunds.service.js';
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
-import { InvoiceService } from './shared/invoicing/invoice.service.js';
 
 export function createApp(): Express {
   const app = express();
@@ -26,9 +25,11 @@ export function createApp(): Express {
   // body, and re-serialising a JSON-parsed body produces a different
   // byte sequence — the HMAC then fails. PAYMENTS.md §5.
   const donationService = new DonationService();
-  const subscriptionService = new SubscriptionService({
-    invoiceService: new InvoiceService(),
-  });
+  // Invoice generation moved out of the critical path in Phase 7 —
+  // SubscriptionService.onCharged enqueues an `invoice-generate`
+  // BullMQ job; the worker (src/worker.ts) runs the real
+  // InvoiceService against Redis-reachable infra.
+  const subscriptionService = new SubscriptionService();
   const refundService = new RefundService();
   const webhookService = new WebhookService({
     donationService,

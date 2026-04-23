@@ -8,6 +8,7 @@ import type {
   RazorpaySubPayload,
   SubscriptionService,
 } from '../subscriptions/subscriptions.service.js';
+import { enqueueWebhookRetry } from '../../shared/jobs/enqueue.js';
 import {
   WebhookEventModel,
   type WebhookEventAttrs,
@@ -29,6 +30,9 @@ export interface WebhookServiceDeps {
   /** Inject a dispatcher spy in tests. Optional — defaults to the
    *  built-in event-type switch. */
   dispatcher?: (eventType: string, payload: unknown) => Promise<void>;
+  /** Invoked on dispatch failure to schedule a retry via BullMQ.
+   *  Defaults to the real `enqueueWebhookRetry` helper. Tests spy. */
+  enqueueRetry?: (payload: { eventId: string; attempt: number }) => Promise<void>;
   clock?: () => Date;
 }
 
@@ -55,6 +59,7 @@ export class WebhookService {
   private readonly refundService: RefundService | undefined;
   private readonly webhookSecret: string;
   private readonly dispatcher: (eventType: string, payload: unknown) => Promise<void>;
+  private readonly enqueueRetry: (payload: { eventId: string; attempt: number }) => Promise<void>;
   private readonly clock: () => Date;
 
   constructor(deps: WebhookServiceDeps) {
@@ -64,6 +69,7 @@ export class WebhookService {
     this.webhookSecret =
       deps.webhookSecret ?? env.RAZORPAY_WEBHOOK_SECRET ?? 'dev-webhook-secret-placeholder';
     this.dispatcher = deps.dispatcher ?? this.defaultDispatcher.bind(this);
+    this.enqueueRetry = deps.enqueueRetry ?? enqueueWebhookRetry;
     this.clock = deps.clock ?? (() => new Date());
   }
 
@@ -162,11 +168,23 @@ export class WebhookService {
       return { httpCode: 200, message: 'ok' };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await WebhookEventModel.updateOne(
+      const updated = await WebhookEventModel.findOneAndUpdate(
         { eventId },
         { $inc: { attempts: 1 }, $set: { status: 'FAILED', lastError: message } },
+        { new: true },
       );
       logger.warn({ eventId, eventType: event.event, err: message }, 'webhook dispatch failed');
+      // Best-effort enqueue a retry. If the enqueue itself throws
+      // (Redis down), we log but still return 500 so Razorpay
+      // retries externally — belt and suspenders.
+      try {
+        await this.enqueueRetry({ eventId, attempt: updated?.attempts ?? 1 });
+      } catch (enqueueErr) {
+        logger.error(
+          { enqueueErr, eventId },
+          'webhook dispatch: enqueueRetry failed; Razorpay external retry is the fallback',
+        );
+      }
       return { httpCode: 500, message: 'retry' };
     }
   }

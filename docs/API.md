@@ -96,6 +96,8 @@ Full REST endpoint catalogue. Base path: `/api/v1`. Auth column: **P** = public,
 | GET    | `/subscriptions/mine`         | U    | Current + historical.                                                                                           |
 | GET    | `/subscriptions/:id/invoices` | U    | List of GST invoice PDF URLs.                                                                                   |
 
+**Async invoice generation.** Invoices are generated asynchronously after a successful charge. When `subscription.charged` webhook fires, the payment row is persisted immediately (tier upgrades synchronously) but the invoice PDF + S3 upload + email is enqueued to a BullMQ worker. Expect up to ~1 minute between charge capture and invoice availability. `/subscriptions/:id/invoices` filters out rows whose invoice hasn't landed yet — clients polling this endpoint will see a newly-charged invoice appear within seconds under normal load.
+
 ---
 
 ## 7. Custom rooms

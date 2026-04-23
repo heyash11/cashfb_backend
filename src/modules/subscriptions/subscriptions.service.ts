@@ -5,10 +5,9 @@ import { env } from '../../config/env.js';
 import { getRazorpayClient } from '../../config/razorpay.js';
 import { logger } from '../../config/logger.js';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../shared/errors/AppError.js';
-import type { InvoiceService } from '../../shared/invoicing/invoice.types.js';
+import { enqueueInvoice } from '../../shared/jobs/enqueue.js';
 import type { SubscriptionAttrs } from '../../shared/models/Subscription.model.js';
 import { SubscriptionModel } from '../../shared/models/Subscription.model.js';
-import type { SubscriptionPaymentAttrs } from '../../shared/models/SubscriptionPayment.model.js';
 import { SubscriptionPaymentModel } from '../../shared/models/SubscriptionPayment.model.js';
 import { AppConfigRepository } from '../../shared/repositories/AppConfig.repository.js';
 import { SubscriptionRepository } from '../../shared/repositories/Subscription.repository.js';
@@ -67,7 +66,14 @@ export interface SubscriptionServiceDeps {
   subPaymentRepo?: SubscriptionPaymentRepository;
   userRepo?: UserRepository;
   appConfigRepo?: AppConfigRepository;
-  invoiceService?: InvoiceService;
+  /**
+   * Phase 7: invoice generation moved out of the critical path.
+   * `onCharged` calls this helper to enqueue an invoice job.
+   * Default wires the real BullMQ `invoice` queue (see
+   * `src/shared/jobs/enqueue.ts`). Tests inject a spy to avoid
+   * opening Redis.
+   */
+  enqueueInvoice?: (payload: { paymentId: string }) => Promise<void>;
   razorpay?: Razorpay;
   keySecret?: string;
   clock?: () => Date;
@@ -113,7 +119,7 @@ export class SubscriptionService {
   private readonly subPaymentRepo: SubscriptionPaymentRepository;
   private readonly userRepo: UserRepository;
   private readonly appConfigRepo: AppConfigRepository;
-  private readonly invoiceService: InvoiceService | undefined;
+  private readonly enqueueInvoiceFn: (payload: { paymentId: string }) => Promise<void>;
   private readonly keySecret: string;
   private readonly clock: () => Date;
   private _razorpay?: Razorpay;
@@ -123,7 +129,7 @@ export class SubscriptionService {
     this.subPaymentRepo = deps.subPaymentRepo ?? new SubscriptionPaymentRepository();
     this.userRepo = deps.userRepo ?? new UserRepository();
     this.appConfigRepo = deps.appConfigRepo ?? new AppConfigRepository();
-    this.invoiceService = deps.invoiceService;
+    this.enqueueInvoiceFn = deps.enqueueInvoice ?? enqueueInvoice;
     this.keySecret = deps.keySecret ?? env.RAZORPAY_KEY_SECRET ?? 'test-secret-unconfigured';
     this.clock = deps.clock ?? (() => new Date());
     if (deps.razorpay) this._razorpay = deps.razorpay;
@@ -231,6 +237,16 @@ export class SubscriptionService {
     return this.subRepo.find({ userId }, { sort: { createdAt: -1 } });
   }
 
+  /**
+   * Invoice generation is async as of Phase 7 — after a charge
+   * captures, `onCharged` enqueues an `invoice-generate` job rather
+   * than computing inline. There is a window (typically seconds,
+   * occasionally up to ~1 minute under worker backlog) where the
+   * payment row exists but `invoiceNumber` / `invoicePdfUrl` are
+   * not yet populated. This list filters out those in-flight rows
+   * so the user's invoice history never includes half-written
+   * entries. See API.md §6 for the user-facing contract.
+   */
   async listInvoices(
     userId: Types.ObjectId,
     subscriptionId: Types.ObjectId,
@@ -288,10 +304,12 @@ export class SubscriptionService {
    * (pattern 1 upsert with $setOnInsert + branch on upsertedId) so
    * the re-run no-ops cleanly without re-running the transaction.
    *
-   * Invoice generation lives OUTSIDE the transaction. It's an
-   * external side effect (PDF render + S3 upload + SES email) that
-   * must not roll back the user's tier upgrade if the PDF service is
-   * down.
+   * Invoice generation is enqueued to the BullMQ `invoice` queue
+   * AFTER the transaction commits. Phase 7 moved invoice PDF + S3
+   * upload + SES email out of the critical path so a user's tier
+   * upgrade lands immediately and the heavier side-effect pipeline
+   * runs in a worker. API consumers see up to ~1 minute between
+   * charge capture and invoice availability (see API.md §6).
    *
    * Mirrors the multi-write transaction pattern already used in
    * Phase 2 signup, Phase 3 vote cast, and Phase 3 post completion.
@@ -376,36 +394,28 @@ export class SubscriptionService {
       await session.endSession();
     }
 
-    // OUTSIDE the transaction: invoice generation. Failure here
-    // logs + alerts but MUST NOT roll back the user's tier upgrade.
-    if (this.invoiceService && paymentId) {
+    // OUTSIDE the transaction: invoice generation is now async.
+    // Phase 7 moved invoice PDF + S3 + SES out of the critical path
+    // by enqueueing an `invoice-generate` job. The user's tier
+    // upgrade already committed inside the transaction above; the
+    // invoice row is populated "eventually" by the worker (typically
+    // seconds; can stretch to a minute under worker backlog).
+    //
+    // Best-effort enqueue (Phase 7 Chunk 2 §onCharged failure mode
+    // option a): if Redis is down at this exact commit moment, we
+    // log + alert but DO NOT roll back the tier upgrade. A user
+    // stranded without an invoice is recoverable manually (admin
+    // re-enqueue) and rare in practice. The alternative (option b,
+    // invoiceQueueStatus + orphan-sweep cron) is a Phase 9 decision
+    // if production shows enqueue-time Redis unavailability is a
+    // real failure mode.
+    if (paymentId) {
       try {
-        const payment = await this.subPaymentRepo.findById(paymentId);
-        if (!payment) return;
-        const res = await this.invoiceService.generateInvoice({
-          payment: payment as SubscriptionPaymentAttrs,
-          user,
-          subscription: sub,
-        });
-        await this.subPaymentRepo.updateOne(
-          { _id: paymentId },
-          {
-            $set: {
-              invoiceNumber: res.invoiceNumber,
-              invoicePdfUrl: res.pdfUrl,
-              baseAmount: res.base,
-              gstAmount: res.gst,
-              cgst: res.cgst,
-              sgst: res.sgst,
-              igst: res.igst,
-              placeOfSupply: user.declaredState,
-            },
-          },
-        );
+        await this.enqueueInvoiceFn({ paymentId: String(paymentId) });
       } catch (err) {
         logger.error(
           { err, paymentId: String(paymentId) },
-          'onCharged: invoice generation failed, payment row already saved',
+          'onCharged: enqueueInvoice failed (Redis down?); payment captured but invoice not scheduled',
         );
       }
     }

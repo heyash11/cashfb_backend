@@ -9,14 +9,20 @@ import {
   createReconcileCodesHandler,
   type ReconcileCodesJobData,
 } from './workers/reconcile-codes.worker.js';
+import { createInvoiceHandler } from './workers/invoice.worker.js';
+import {
+  WEBHOOK_RETRY_SETTINGS,
+  createWebhookRetryHandler,
+} from './workers/webhook-retry.worker.js';
 import { installShutdownHandlers, registerWorker } from './workers/shutdown.js';
 import { createTierSweepHandler, type TierSweepJobData } from './workers/tier-sweep.worker.js';
 import { createTopDonorHandler, type TopDonorJobData } from './workers/top-donor.worker.js';
+import type { InvoiceJobPayload, WebhookRetryJobPayload } from './shared/jobs/enqueue.js';
 
 /**
  * Top-level worker process. One Node process boots all cron
- * workers (single `cron` queue, job-name routing). Event-driven
- * queues (`invoice`, `webhook-retry`) land in Chunk 2.
+ * workers (single `cron` queue, job-name routing) plus two
+ * event-driven Workers: `invoice` and `webhook-retry`.
  *
  * Monolithic worker per Phase 7 product decision. Split trigger is
  * production signal that one queue's handler profile diverges from
@@ -69,6 +75,17 @@ async function main(): Promise<void> {
   const tierSweep = createTierSweepHandler({
     enqueueContinuation: async (data) => {
       await cronQueue.add(JOB_NAMES.TIER_EXPIRY_SWEEP, data, {
+        // Date.now() intentional: correctness is at the Mongo
+        // predicate layer (sweepExpiredTiers's convergent
+        // {tier: $ne: 'PUBLIC'} filter), not at the BullMQ jobId
+        // layer. Duplicate continuations (e.g. from handler
+        // crash-retry after enqueue succeeded) are harmless — they
+        // all see the same predicate and flip only still-expired
+        // users. A stable jobId like
+        // `tier-sweep-continue-${scheduledFor}` would block
+        // duplicate continuations but adds complexity without
+        // correctness gain. See Chunk 3's CONVENTIONS.md addition
+        // on loose vs stable jobId strategies.
         jobId: `tier-sweep-continue-${Date.now()}`,
       });
     },
@@ -93,6 +110,25 @@ async function main(): Promise<void> {
     }
   });
   registerWorker(cronWorker);
+
+  // Event-driven workers (Chunk 2).
+  const invoiceHandler = createInvoiceHandler();
+  const invoiceWorker = makeWorker<InvoiceJobPayload, unknown>(QUEUES.INVOICE, async (job) =>
+    invoiceHandler(job.data),
+  );
+  registerWorker(invoiceWorker);
+
+  const webhookRetryHandler = createWebhookRetryHandler();
+  const webhookRetryWorker = makeWorker<WebhookRetryJobPayload, unknown>(
+    QUEUES.WEBHOOK_RETRY,
+    async (job) => webhookRetryHandler(job.data),
+    {
+      settings: {
+        backoffStrategy: WEBHOOK_RETRY_SETTINGS.backoffStrategy,
+      },
+    },
+  );
+  registerWorker(webhookRetryWorker);
 
   installShutdownHandlers();
   logger.info('[worker] ready');
