@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
@@ -5,6 +6,9 @@ import { ephemeralStats, initJwtKeys, isEphemeralMode } from './shared/jwt/signe
 
 async function main(): Promise<void> {
   await initJwtKeys();
+
+  await mongoose.connect(env.MONGO_URI);
+  logger.info('[api] mongo connected');
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {
@@ -22,7 +26,16 @@ async function main(): Promise<void> {
     }
     server.close(() => {
       logger.info('http closed');
-      process.exit(0);
+      mongoose
+        .disconnect()
+        .then(() => {
+          logger.info('[api] mongo disconnected');
+          process.exit(0);
+        })
+        .catch((err: unknown) => {
+          logger.error({ err }, '[api] mongo disconnect failed');
+          process.exit(1);
+        });
     });
     setTimeout(() => {
       logger.error('forced shutdown after 10s');
