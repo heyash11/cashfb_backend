@@ -43,6 +43,19 @@ Repository helpers that swallow duplicate-key errors (`insertIfAbsent`, `findOrC
 
 Rule: if the service needs to do ANY further work inside the transaction after the potentially-duplicate write, use pattern 1. If the duplicate is the terminal branch (throw and return), pattern 2 is fine.
 
+#### Advisory pre-checks vs atomic predicates
+
+For state-machine flips where a single atomic op carries the correctness guarantee (FCFS redeem-code claim, custom-room state transitions, daily-vote dedup), the atomic `findOneAndUpdate` predicate IS the gate. Pre-checks that run before the op are advisory only — nice error messages, fast short-circuits — but they must not be treated as load-bearing.
+
+Discipline:
+
+- **The predicate is the gate.** Pre-checks exist to return a friendly error before a no-op write. A race between the pre-check and the atomic op is always possible; the predicate must cover the race.
+- **Do not "fix" races with a two-phase CAS.** Reading-then-checking-then-updating adds a round trip without adding guarantees. If a pre-check passes but the atomic op fails the predicate, the caller already has the right error (CODE_TAKEN, VOTE_ALREADY_CAST).
+- **Do not wrap in a transaction just for this.** A single atomic op is already atomic at the document level; a transaction adds cost and creates retry-loop risk on transient mongo errors.
+- **Accept the millisecond race window for non-money, non-compliance flows.** User-blocked-mid-claim is a ~ms window versus a multi-second admin workflow; the Phase 7 fraud sweep catches any exotic drift at zero incremental complexity. Reach for hard guarantees only where the write is irreversible (money, prize allocation, vote cast) AND the adversary can reliably hit the window.
+
+Concrete example: see the `claim()` method in `src/modules/redeem-codes/redeem-codes.service.ts`. Pre-checks: code exists + has postId, user not blocked, post completed. Atomic op: `findOneAndUpdate({_id, status: 'PUBLISHED'}, {$set})`. The `status: 'PUBLISHED'` predicate is the only gate the race against admin-void or concurrent-copy has to pass.
+
 ---
 
 ## Express

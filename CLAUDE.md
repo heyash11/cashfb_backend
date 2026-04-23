@@ -128,7 +128,7 @@ src/modules/
 ├── posts/           # Phase 3 (done — includes post-completion logic)
 ├── votes/           # Phase 3 (done)
 ├── users/           # Phase 3 (only /me/coins; other /me/* endpoints deferred)
-├── redeem-codes/    # Phase 4 (planned)
+├── redeem-codes/    # Phase 4 (done)
 ├── donations/       # Phase 5 (planned)
 ├── subscriptions/   # Phase 5 (planned)
 ├── webhooks/        # Phase 5 (planned)

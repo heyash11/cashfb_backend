@@ -21,6 +21,11 @@ export {
 export { RedeemCodesController } from './redeem-codes.controller.js';
 export { createRedeemCodesRouter } from './redeem-codes.routes.js';
 export {
+  reconcileCopiedCodes,
+  type ReconcileCopiedCodesInput,
+  type ReconcileCopiedCodesResult,
+} from './redeem-codes.reconcile.js';
+export {
   AdminListCodesQuerySchema,
   AdminPublishBatchBodySchema,
   AdminUploadBatchMetaSchema,

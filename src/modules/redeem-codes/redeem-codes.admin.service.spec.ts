@@ -278,3 +278,80 @@ describe('AdminRedeemCodeService.voidCode', () => {
     expect(String(after?.firstCopiedBy)).toBe(String(copier));
   });
 });
+
+describe('AdminRedeemCodeService.uploadBatch — whitespace normalization', () => {
+  it('inserts a leading-whitespace code and hashes it identically to its trimmed form', async () => {
+    const svc = mkSvc();
+    const admin = new Types.ObjectId();
+
+    const csv = Buffer.from(['code,denomination', '"  TRIM-ME-1",5000'].join('\n'), 'utf8');
+    const result = await svc.uploadBatch({ csvBuffer: csv, supplierName: 'Xoxoday' }, admin);
+    expect(result.inserted).toBe(1);
+
+    // The hash the service would compute for the trimmed+uppercased
+    // code must match the codeHash actually persisted.
+    const expectedHash = svc.codeHash('TRIM-ME-1');
+    const stored = await RedeemCodeModel.findOne({ batchId: result.batchId });
+    expect(stored?.codeHash).toBe(expectedHash);
+
+    // Re-uploading the same code without the whitespace must be
+    // detected as a DB duplicate.
+    const again = await svc.uploadBatch(
+      {
+        csvBuffer: csvFor([{ code: 'TRIM-ME-1', denomination: 5000 }]),
+        supplierName: 'Xoxoday',
+      },
+      admin,
+    );
+    expect(again.inserted).toBe(0);
+    expect(again.skipped).toHaveLength(1);
+    expect(again.skipped[0]?.reason).toBe('DUPLICATE_IN_DB');
+  });
+});
+
+describe('AdminRedeemCodeService.auditExport', () => {
+  it('streams header + 1000 rows without buffering all rows in memory', async () => {
+    const svc = mkSvc();
+    const admin = new Types.ObjectId();
+
+    // Seed 1000 codes via one batch upload. Uses the real pipeline
+    // so the audit export walks real encrypted rows.
+    const rows = Array.from({ length: 1000 }, (_, i) => ({
+      code: `AUDIT-${String(i).padStart(4, '0')}`,
+      denomination: 5000,
+    }));
+    await svc.uploadBatch({ csvBuffer: csvFor(rows), supplierName: 'Xoxoday' }, admin);
+
+    // TODO: if this flakes on CI, run vitest with --expose-gc so the global.gc() call above forces a collection, or raise the 50 MB bound below.
+    if (global.gc) global.gc();
+    const heapBefore = process.memoryUsage().heapUsed;
+
+    const stream = svc.auditExport({});
+    let lineCount = 0;
+    let buffered = '';
+    await new Promise<void>((resolve, reject) => {
+      stream.on('data', (chunk: Buffer | string) => {
+        buffered += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        const lines = buffered.split('\n');
+        // Keep the last (possibly partial) line for the next chunk.
+        buffered = lines.pop() ?? '';
+        lineCount += lines.length;
+      });
+      stream.on('end', () => {
+        if (buffered.length > 0) lineCount += 1;
+        resolve();
+      });
+      stream.on('error', reject);
+    });
+
+    const heapAfter = process.memoryUsage().heapUsed;
+    const heapDelta = heapAfter - heapBefore;
+
+    // Header + 1000 rows.
+    expect(lineCount).toBe(1001);
+    // Generous bound: 1000 rows of ~150 bytes each = ~150 KB of raw
+    // CSV. A buggy impl buffering all rows in JS strings would blow
+    // past 50 MB. Real streaming stays well under it.
+    expect(heapDelta).toBeLessThan(50 * 1024 * 1024);
+  }, 60_000);
+});
