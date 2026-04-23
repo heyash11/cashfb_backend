@@ -244,22 +244,24 @@ app.use(errorHandler);
 
 ## 12. Error codes reference
 
-| Code                     | HTTP | Meaning                             |
-| ------------------------ | ---- | ----------------------------------- |
-| `VALIDATION_FAILED`      | 400  | Zod schema rejected input           |
-| `INVALID_CURSOR`         | 400  | Pagination cursor is malformed      |
-| `UNAUTHORIZED`           | 401  | Missing/invalid JWT                 |
-| `FORBIDDEN`              | 403  | RBAC denied                         |
-| `INSUFFICIENT_COINS`     | 402  | Balance below required              |
-| `NOT_FOUND`              | 404  | Resource not found                  |
-| `VOTE_ALREADY_CAST`      | 409  | User already voted today            |
-| `POST_ALREADY_COMPLETED` | 409  | User already completed post         |
-| `CODE_TAKEN`             | 409  | Another user won FCFS               |
-| `DUPLICATE_WEBHOOK`      | 200  | Idempotent no-op                    |
-| `RATE_LIMITED`           | 429  | Too many requests                   |
-| `GEO_BLOCKED`            | 451  | State on blocked list               |
-| `KYC_REQUIRED`           | 451  | Must submit PAN before claim        |
-| `MAINTENANCE_MODE`       | 503  | `app_config.maintenanceMode = true` |
+| Code                     | HTTP | Meaning                                              |
+| ------------------------ | ---- | ---------------------------------------------------- |
+| `VALIDATION_FAILED`      | 400  | Zod schema rejected input                            |
+| `INVALID_CURSOR`         | 400  | Pagination cursor is malformed                       |
+| `UNAUTHORIZED`           | 401  | Missing/invalid JWT                                  |
+| `FORBIDDEN`              | 403  | RBAC denied                                          |
+| `INSUFFICIENT_COINS`     | 402  | Balance below required                               |
+| `NOT_FOUND`              | 404  | Resource not found                                   |
+| `VOTE_ALREADY_CAST`      | 409  | User already voted today                             |
+| `POST_ALREADY_COMPLETED` | 409  | User already completed post                          |
+| `CODE_TAKEN`             | 409  | Another user won FCFS                                |
+| `CODE_NOT_OWNED`         | 409  | Mark-claimed by a user who did not win the FCFS copy |
+| `POST_NOT_COMPLETED`     | 403  | User has not completed the post tied to this code    |
+| `DUPLICATE_WEBHOOK`      | 200  | Idempotent no-op                                     |
+| `RATE_LIMITED`           | 429  | Too many requests                                    |
+| `GEO_BLOCKED`            | 451  | State on blocked list                                |
+| `KYC_REQUIRED`           | 451  | Must submit PAN before claim                         |
+| `MAINTENANCE_MODE`       | 503  | `app_config.maintenanceMode = true`                  |
 
 ---
 

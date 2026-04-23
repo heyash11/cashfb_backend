@@ -50,3 +50,20 @@ export const AdminListCodesQuerySchema = z
   })
   .strict();
 export type AdminListCodesQuery = z.infer<typeof AdminListCodesQuerySchema>;
+
+// --- User-facing endpoints (GET /posts/:id/redeem-codes,
+// POST /redeem-codes/:id/copy, POST /redeem-codes/:id/mark-claimed) ---
+
+export const PostIdParamsSchema = z
+  .object({
+    id: ObjectIdHex,
+  })
+  .strict();
+export type PostIdParams = z.infer<typeof PostIdParamsSchema>;
+
+export const CodeIdParamsSchema = z
+  .object({
+    id: ObjectIdHex,
+  })
+  .strict();
+export type CodeIdParams = z.infer<typeof CodeIdParamsSchema>;
