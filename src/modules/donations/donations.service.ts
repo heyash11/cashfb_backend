@@ -5,7 +5,9 @@ import { env } from '../../config/env.js';
 import { getRazorpayClient } from '../../config/razorpay.js';
 import { BadRequestError } from '../../shared/errors/AppError.js';
 import type { DonationAttrs } from '../../shared/models/Donation.model.js';
+import { DonationModel } from '../../shared/models/Donation.model.js';
 import type { TopDonorRankingAttrs } from '../../shared/models/TopDonorRanking.model.js';
+import { TopDonorRankingModel } from '../../shared/models/TopDonorRanking.model.js';
 import { DonationRepository } from '../../shared/repositories/Donation.repository.js';
 import { TopDonorRankingRepository } from '../../shared/repositories/TopDonorRanking.repository.js';
 
@@ -165,5 +167,58 @@ export class DonationService {
         },
       },
     );
+  }
+
+  /**
+   * Recompute the top-donor leaderboard from CAPTURED donations and
+   * overwrite `top_donor_rankings`. Meant to run periodically as a
+   * cron job (Phase 7 wires it via BullMQ at 5-minute cadence).
+   *
+   * No locking in Phase 5: the computation is deterministic over the
+   * same input set, so two parallel refreshes produce the same
+   * output with harmless last-writer-wins semantics. Phase 7's
+   * BullMQ scheduler prevents concurrent cron fires via its own
+   * singleton locking (scheduler.limiter + jobId dedup); do NOT
+   * rely on this method being called from multiple arbitrary
+   * callers in parallel.
+   *
+   * Partial refunds are NOT netted against totals in Phase 5 — the
+   * top-donor surface is a UX signal, not a compliance report. If
+   * refund accounting matters later, switch to aggregating net of
+   * SubscriptionPayment refunds and reassess.
+   */
+  async refreshTopDonorRanking(input: { limit?: number } = {}): Promise<{ rankingCount: number }> {
+    const limit = Math.max(1, Math.min(1000, input.limit ?? 50));
+
+    const aggregated = await DonationModel.aggregate<{
+      _id: Types.ObjectId;
+      totalDonated: number;
+      donationCount: number;
+    }>([
+      { $match: { status: 'CAPTURED', userId: { $ne: null } } },
+      {
+        $group: {
+          _id: '$userId',
+          totalDonated: { $sum: '$amount' },
+          donationCount: { $sum: 1 },
+        },
+      },
+      { $sort: { totalDonated: -1 } },
+      { $limit: limit },
+    ]).exec();
+
+    await TopDonorRankingModel.deleteMany({});
+    if (aggregated.length === 0) return { rankingCount: 0 };
+
+    const now = new Date();
+    const docs: Array<Partial<TopDonorRankingAttrs>> = aggregated.map((row, i) => ({
+      rank: i + 1,
+      userId: row._id,
+      totalDonated: row.totalDonated,
+      donationCount: row.donationCount,
+      computedAt: now,
+    }));
+    await TopDonorRankingModel.insertMany(docs);
+    return { rankingCount: aggregated.length };
   }
 }

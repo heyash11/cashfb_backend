@@ -1,6 +1,7 @@
 import express, { type Express, type Request, type Response } from 'express';
 import { env } from './config/env.js';
 import { DonationService } from './modules/donations/donations.service.js';
+import { RefundService } from './modules/refunds/refunds.service.js';
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
@@ -28,7 +29,12 @@ export function createApp(): Express {
   const subscriptionService = new SubscriptionService({
     invoiceService: new InvoiceService(),
   });
-  const webhookService = new WebhookService({ donationService, subscriptionService });
+  const refundService = new RefundService();
+  const webhookService = new WebhookService({
+    donationService,
+    subscriptionService,
+    refundService,
+  });
   app.use('/api/v1', createWebhooksRouter(webhookService));
 
   app.use(express.json({ limit: '1mb' }));

@@ -5,6 +5,7 @@ import {
   connectTestMongo,
   disconnectTestMongo,
 } from '../../../test/testing/mongo.js';
+import type { RefundService } from '../refunds/refunds.service.js';
 import { MODELS } from '../../shared/models/index.js';
 import { WebhookEventModel } from '../../shared/models/WebhookEvent.model.js';
 import { WebhookService } from './webhooks.service.js';
@@ -107,6 +108,38 @@ describe('WebhookService.handleRazorpayWebhook', () => {
     expect(result).toEqual({ httpCode: 400, message: 'invalid signature' });
     expect(dispatcher).not.toHaveBeenCalled();
     expect(await WebhookEventModel.countDocuments({ eventId: 'evt_bad_sig_1' })).toBe(0);
+  });
+
+  it('refund.processed event → routes to refundService.onRefundProcessed; row DONE, 200', async () => {
+    const refundSpy = vi.fn().mockResolvedValue(undefined);
+    const refundService = {
+      initiateRefund: vi.fn(),
+      onRefundProcessed: refundSpy,
+    } as unknown as RefundService;
+
+    const svc = new WebhookService({
+      webhookSecret: WEBHOOK_SECRET,
+      refundService,
+    });
+    const eventPayload = {
+      event: 'refund.processed',
+      payload: {
+        refund: {
+          entity: { id: 'rfnd_w_1', payment_id: 'pay_w_1', amount: 5900, status: 'processed' },
+        },
+      },
+    };
+    const rawStr = JSON.stringify(eventPayload);
+    const raw = Buffer.from(rawStr, 'utf8');
+    const sig = signEvent(rawStr);
+
+    const result = await svc.handleRazorpayWebhook(raw, sig, 'evt_refund_1');
+    expect(result).toEqual({ httpCode: 200, message: 'ok' });
+    expect(refundSpy).toHaveBeenCalledTimes(1);
+    expect(refundSpy).toHaveBeenCalledWith(eventPayload.payload);
+
+    const row = await WebhookEventModel.findOne({ eventId: 'evt_refund_1' });
+    expect(row?.status).toBe('DONE');
   });
 
   it('concurrent same-event dispatch → handler called exactly once', async () => {

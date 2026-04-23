@@ -30,12 +30,31 @@ export interface SesEmailSenderOptions {
 }
 
 /**
+ * Wraps a base64 string to 76 chars per line with CRLF terminators
+ * per RFC 2045 §6.8. Gmail / Outlook / SES tolerate longer lines in
+ * practice, but strict MIME parsers (some corporate gateways,
+ * Thunderbird with strict mode) reject them silently. Line-wrapping
+ * is cheap — always do it.
+ */
+export function wrapBase64Rfc2045(base64: string): string {
+  const chunks: string[] = [];
+  for (let i = 0; i < base64.length; i += 76) {
+    chunks.push(base64.slice(i, i + 76));
+  }
+  return chunks.join('\r\n');
+}
+
+/**
  * Minimal MIME builder — the SES SDK's simple `SendEmailCommand`
  * does NOT support attachments, so we build a multipart/mixed blob
  * and hand it to `SendRawEmailCommand`. Boundaries are random hex so
  * they can't appear in attachment content.
+ *
+ * Exported (not just a private helper) so `buildMime` can be
+ * unit-tested directly without constructing a real `SesEmailSender`
+ * or hitting the SES client.
  */
-function buildMime(
+export function buildMime(
   from: string,
   replyTo: string | undefined,
   input: SendEmailInput,
@@ -61,11 +80,7 @@ function buildMime(
     lines.push('Content-Transfer-Encoding: base64');
     lines.push(`Content-Disposition: attachment; filename="${att.filename}"`);
     lines.push('');
-    // TODO(chunk-4): wrap base64 to 76 chars per line per RFC 2045. Gmail
-    // and Outlook accept long base64 in practice and SES SendRawEmail does
-    // not enforce the limit, but strict MIME-conformant clients may reject.
-    // Track in Chunk 4 alongside other doc/cleanup items.
-    lines.push(att.content.toString('base64'));
+    lines.push(wrapBase64Rfc2045(att.content.toString('base64')));
     lines.push('');
   }
   lines.push(`--${boundary}--`);

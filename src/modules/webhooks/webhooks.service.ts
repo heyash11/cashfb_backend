@@ -2,6 +2,7 @@ import Razorpay from 'razorpay';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import type { DonationService } from '../donations/donations.service.js';
+import type { RazorpayRefundPayload, RefundService } from '../refunds/refunds.service.js';
 import type {
   RazorpayChargedPayload,
   RazorpaySubPayload,
@@ -23,6 +24,7 @@ import {
 export interface WebhookServiceDeps {
   donationService?: DonationService;
   subscriptionService?: SubscriptionService;
+  refundService?: RefundService;
   webhookSecret?: string;
   /** Inject a dispatcher spy in tests. Optional — defaults to the
    *  built-in event-type switch. */
@@ -50,6 +52,7 @@ interface RazorpayEventEnvelope {
 export class WebhookService {
   private readonly donationService: DonationService | undefined;
   private readonly subscriptionService: SubscriptionService | undefined;
+  private readonly refundService: RefundService | undefined;
   private readonly webhookSecret: string;
   private readonly dispatcher: (eventType: string, payload: unknown) => Promise<void>;
   private readonly clock: () => Date;
@@ -57,6 +60,7 @@ export class WebhookService {
   constructor(deps: WebhookServiceDeps) {
     this.donationService = deps.donationService;
     this.subscriptionService = deps.subscriptionService;
+    this.refundService = deps.refundService;
     this.webhookSecret =
       deps.webhookSecret ?? env.RAZORPAY_WEBHOOK_SECRET ?? 'dev-webhook-secret-placeholder';
     this.dispatcher = deps.dispatcher ?? this.defaultDispatcher.bind(this);
@@ -210,7 +214,11 @@ export class WebhookService {
         await this.requireSubs().onPending(payload as RazorpaySubPayload);
         return;
       case 'refund.processed':
-        throw new Error('NOT_IMPLEMENTED: refund.processed — wired in Phase 5 Chunk 4');
+        if (!this.refundService) {
+          throw new Error('NOT_IMPLEMENTED: refundService not wired');
+        }
+        await this.refundService.onRefundProcessed(payload as RazorpayRefundPayload);
+        return;
       default:
         logger.info({ eventType }, 'webhook: unknown event type, ignored');
         return;

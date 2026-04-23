@@ -113,10 +113,12 @@ Compliance framing: TDS 194BA applies on prize payouts. Having PAN on file befor
 ## 7. Refund policy
 
 **Status:** :red_circle: Open
-**Blocks:** Phase 5 (refund endpoint + user-facing copy)
+**Blocks:** Phase 5 user self-refund endpoint + user-facing copy in `cms_content.TERMS`. Does NOT block the admin-only refund path (already landed in Phase 5 Chunk 4 via `RefundService.initiateRefund`).
 **Recommended default:** 7-day no-questions refund on first subscription charge. No refund on renewal charges. Pro-rated refund if cancelled within 24 h of renewal on a support-ticket basis.
 
-**Action needed:** Owner approves or provides revised policy. Legal text goes into `cms_content.TERMS`.
+**Phase 5 status (2026-04-23):** Admin-initiated refund shipped via `RefundService.initiateRefund(paymentId, reason, actorId, amountPaise?, cancelSubscription?)`. Wired to `rzp.payments.refund` + conditional `rzp.subscriptions.cancel` per PAYMENTS.md §7. Webhook handler `onRefundProcessed` flips `SubscriptionPayment.status` to `REFUNDED` / `PARTIAL_REFUND` with idempotent status predicate. Tier downgrade flows through the ensuing `subscription.cancelled` cascade (no duplication). User self-refund DEFERRED — not exposed on any user route.
+
+**Action needed:** Owner approves the 7-day policy text. Once approved: (a) legal text into `cms_content.TERMS`, (b) user-facing `POST /me/subscriptions/:id/refund` endpoint with 7-day window enforcement, (c) pro-rated calculation for the 24h-after-renewal support path. Status stays 🔴 until (a) lands.
 
 ---
 
@@ -247,6 +249,26 @@ Mongoose 8's `InferSchemaType<typeof XYZSchema>` misbehaves in two places we hit
 2. ObjectId `ref` fields (e.g. `users.referredBy`, `device_fingerprints.linkedUserIds[]`) resolve to a class-metadata shape (`{ prototype?: ObjectId; cacheHexString?: ...; ... }`) instead of `Types.ObjectId`.
 
 Every workaround site in the auth module was tagged `TODO(schema-types)`. The refactor replaced `export type XyzAttrs = InferSchemaType<typeof XyzSchema>;` with hand-written interfaces and removed all `as unknown as Partial<XyzAttrs>` / `String(id)` / `(row as { _id?: unknown })._id` casts added as Phase 2 workarounds.
+
+---
+
+## 16. SES from-domain verification (DKIM + DMARC for cashfb.com)
+
+**Status:** :red_circle: Open
+**Blocks:** Prod launch only. Does NOT block dev/staging — the invoice pipeline is env-gated and falls back to `LogOnlyEmailSender` when `SES_FROM_EMAIL` is unset.
+**Recommended default:** Verify the `cashfb.com` domain in AWS SES ap-south-1, publish DKIM CNAMEs + SPF + DMARC records at the registrar, and set `SES_FROM_EMAIL=noreply@cashfb.com` in prod.
+
+Without domain verification, SES prod sending is rate-limited to the sandbox quota and all recipients must be pre-verified. Invoice emails wouldn't reach paying users. Gmail and Outlook have been tightening DKIM/DMARC enforcement since 2024 — unsigned invoice mail from a transactional sender risks silent quarantine.
+
+**Action needed:**
+
+1. Confirm the purchased domain (`cashfb.com` or alternative) and the registrar.
+2. Verify the domain in SES ap-south-1 via the AWS console. Capture the three DKIM CNAME records SES issues.
+3. Add DKIM CNAMEs + an SPF TXT (`v=spf1 include:amazonses.com ~all`) + a starting-point DMARC TXT (`v=DMARC1; p=quarantine; rua=mailto:dmarc@cashfb.com`) at the registrar.
+4. Set `SES_FROM_EMAIL` (prod-required via `env.ts` superRefine) and optionally `SES_REPLY_TO_EMAIL` (prod-optional; if unset, the MIME builder omits the Reply-To header per Phase 5 Chunk 1 sign-off).
+5. Move the SES account out of sandbox by opening an AWS support ticket with expected send volume + sample invoice content.
+
+Low-effort (one working day including DNS propagation) but must be done before the first prod subscription charges. Tracked here so prod launch can't accidentally ship with invoice email silently dropping.
 
 ---
 

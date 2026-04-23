@@ -54,7 +54,13 @@ Discipline:
 - **Do not wrap in a transaction just for this.** A single atomic op is already atomic at the document level; a transaction adds cost and creates retry-loop risk on transient mongo errors.
 - **Accept the millisecond race window for non-money, non-compliance flows.** User-blocked-mid-claim is a ~ms window versus a multi-second admin workflow; the Phase 7 fraud sweep catches any exotic drift at zero incremental complexity. Reach for hard guarantees only where the write is irreversible (money, prize allocation, vote cast) AND the adversary can reliably hit the window.
 
-Concrete example: see the `claim()` method in `src/modules/redeem-codes/redeem-codes.service.ts`. Pre-checks: code exists + has postId, user not blocked, post completed. Atomic op: `findOneAndUpdate({_id, status: 'PUBLISHED'}, {$set})`. The `status: 'PUBLISHED'` predicate is the only gate the race against admin-void or concurrent-copy has to pass.
+Concrete examples in the codebase:
+
+1. **FCFS redeem-code claim** — `src/modules/redeem-codes/redeem-codes.service.ts` `claim()`. Pre-checks: code exists + has postId, user not blocked, post completed. Atomic op: `findOneAndUpdate({_id, status: 'PUBLISHED'}, {$set})`. The `status: 'PUBLISHED'` predicate is the only gate the race against admin-void or concurrent-copy has to pass.
+
+2. **Webhook idempotency via `$setOnInsert` on eventId** — `src/modules/webhooks/webhooks.service.ts` `handleRazorpayWebhook()`. Pre-check: `findOne({eventId})` for friendly short-circuit on already-DONE events. Atomic op: `findOneAndUpdate({eventId}, {$setOnInsert: {...status: 'PROCESSING'}}, {upsert: true, new: false, rawResult: true})`. The upsert's `updatedExisting` flag is the single-winner gate: exactly one concurrent caller sees `false` and owns dispatch; everyone else reads the pre-existing row's status and routes to `duplicate` / `concurrent` / reclaim. A naive `findOne`-then-`upsert` loses this — two concurrent deliveries both read null and both dispatch.
+
+3. **Multi-level idempotency — WebhookEvent gate PLUS razorpayPaymentId unique** — `src/modules/subscriptions/subscriptions.service.ts` `onCharged()`. The WebhookEvent table guards against duplicate _deliveries_; the `razorpayPaymentId` unique index inside the charged-handler's `withTransaction` guards against duplicate _processing_ of the same payment even if the event-level gate is ever bypassed. Pattern 1 (`updateOne + $setOnInsert + upsert, branch on upsertedId`) detects insert-winner vs. re-run and commits a harmless no-op on the re-run. Defence in depth: the invoice numbering upstream of this handler is irreversible, so losing the race twice would mint a duplicate invoice — two independent predicates prevent it.
 
 ---
 

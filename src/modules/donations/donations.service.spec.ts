@@ -199,6 +199,54 @@ describe('DonationService.getTopDonor / listTopDonors', () => {
   });
 });
 
+describe('DonationService.refreshTopDonorRanking', () => {
+  it('aggregates CAPTURED donations per user, sorts by total desc, overwrites top_donor_rankings', async () => {
+    const svc = mkSvc();
+    const alice = new Types.ObjectId();
+    const bob = new Types.ObjectId();
+    const carol = new Types.ObjectId();
+
+    // Alice: 3 captured totaling 50000. Bob: 1 × 30000. Carol: 2 × 10000.
+    // One FAILED donation for Alice that must NOT count.
+    await DonationModel.create([
+      { userId: alice, amount: 20000, razorpayOrderId: 'a1', status: 'CAPTURED' },
+      { userId: alice, amount: 20000, razorpayOrderId: 'a2', status: 'CAPTURED' },
+      { userId: alice, amount: 10000, razorpayOrderId: 'a3', status: 'CAPTURED' },
+      { userId: alice, amount: 99999, razorpayOrderId: 'a_failed', status: 'FAILED' },
+      { userId: bob, amount: 30000, razorpayOrderId: 'b1', status: 'CAPTURED' },
+      { userId: carol, amount: 5000, razorpayOrderId: 'c1', status: 'CAPTURED' },
+      { userId: carol, amount: 5000, razorpayOrderId: 'c2', status: 'CAPTURED' },
+    ]);
+
+    // Stale ranking row that must be overwritten.
+    await TopDonorRankingModel.create({
+      rank: 1,
+      userId: new Types.ObjectId(),
+      totalDonated: 999999,
+    });
+
+    const result = await svc.refreshTopDonorRanking();
+    expect(result.rankingCount).toBe(3);
+
+    const rows = await TopDonorRankingModel.find({}).sort({ rank: 1 }).lean();
+    expect(rows).toHaveLength(3);
+
+    expect(rows[0]?.rank).toBe(1);
+    expect(String(rows[0]?.userId)).toBe(String(alice));
+    expect(rows[0]?.totalDonated).toBe(50000);
+    expect(rows[0]?.donationCount).toBe(3);
+
+    expect(rows[1]?.rank).toBe(2);
+    expect(String(rows[1]?.userId)).toBe(String(bob));
+    expect(rows[1]?.totalDonated).toBe(30000);
+
+    expect(rows[2]?.rank).toBe(3);
+    expect(String(rows[2]?.userId)).toBe(String(carol));
+    expect(rows[2]?.totalDonated).toBe(10000);
+    expect(rows[2]?.donationCount).toBe(2);
+  });
+});
+
 describe('DonationService.onCaptured (webhook-driven)', () => {
   it('flips a CREATED donation to CAPTURED with paymentId + capturedAt', async () => {
     const svc = mkSvc();
