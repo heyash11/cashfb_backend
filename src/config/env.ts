@@ -33,6 +33,29 @@ const EnvSchema = z
     AWS_REGION: z.string().min(1).optional(),
     KMS_KEY_ID: z.string().min(1).optional(),
     REDEEM_CODE_HASH_SECRET: z.string().min(32).optional(),
+
+    RAZORPAY_KEY_ID: z.string().min(1).optional(),
+    RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
+    RAZORPAY_WEBHOOK_SECRET: z.string().min(16).optional(),
+
+    MERCHANT_LEGAL_NAME: z.string().min(1).optional(),
+    MERCHANT_GSTIN: z
+      .string()
+      .regex(/^[0-9A-Z]{15}$/, 'GSTIN must be 15 alphanumeric chars')
+      .optional(),
+    MERCHANT_STATE_CODE: z
+      .string()
+      .regex(/^IN-[A-Z]{2}$/, 'State must be ISO 3166-2:IN code like IN-MH')
+      .optional(),
+    MERCHANT_ADDRESS_LINE1: z.string().min(1).optional(),
+    MERCHANT_PIN: z
+      .string()
+      .regex(/^[0-9]{6}$/, 'PIN must be 6 digits')
+      .optional(),
+
+    S3_INVOICES_BUCKET: z.string().min(1).optional(),
+    SES_FROM_EMAIL: z.string().email().optional(),
+    SES_REPLY_TO_EMAIL: z.string().email().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;
@@ -44,6 +67,16 @@ const EnvSchema = z
       'AWS_REGION',
       'KMS_KEY_ID',
       'REDEEM_CODE_HASH_SECRET',
+      'RAZORPAY_KEY_ID',
+      'RAZORPAY_KEY_SECRET',
+      'RAZORPAY_WEBHOOK_SECRET',
+      'MERCHANT_LEGAL_NAME',
+      'MERCHANT_GSTIN',
+      'MERCHANT_STATE_CODE',
+      'MERCHANT_ADDRESS_LINE1',
+      'MERCHANT_PIN',
+      'S3_INVOICES_BUCKET',
+      'SES_FROM_EMAIL',
     ] as const;
     for (const key of requiredInProd) {
       if (!data[key]) {
