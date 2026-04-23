@@ -9,6 +9,7 @@ import {
   createReconcileCodesHandler,
   type ReconcileCodesJobData,
 } from './workers/reconcile-codes.worker.js';
+import { routeFailedToDlq } from './workers/dlq.js';
 import { createInvoiceHandler } from './workers/invoice.worker.js';
 import {
   WEBHOOK_RETRY_SETTINGS,
@@ -110,6 +111,7 @@ async function main(): Promise<void> {
     }
   });
   registerWorker(cronWorker);
+  routeFailedToDlq(cronWorker);
 
   // Event-driven workers (Chunk 2).
   const invoiceHandler = createInvoiceHandler();
@@ -117,6 +119,7 @@ async function main(): Promise<void> {
     invoiceHandler(job.data),
   );
   registerWorker(invoiceWorker);
+  routeFailedToDlq(invoiceWorker);
 
   const webhookRetryHandler = createWebhookRetryHandler();
   const webhookRetryWorker = makeWorker<WebhookRetryJobPayload, unknown>(
@@ -129,6 +132,7 @@ async function main(): Promise<void> {
     },
   );
   registerWorker(webhookRetryWorker);
+  routeFailedToDlq(webhookRetryWorker);
 
   installShutdownHandlers();
   logger.info('[worker] ready');

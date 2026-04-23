@@ -289,6 +289,21 @@ Phase 6 Chunk 1 `assignWinners` already persists the winner row with `payoutStat
 
 ---
 
+## 18. Orphaned `FAILED` webhook_events cron sweep (post-MVP)
+
+**Status:** :red_circle: Open
+**Blocks:** Nothing in the MVP critical path. Phase 7 ships event-driven webhook retries only — `WebhookService.dispatchAndFinalise` enqueues a BullMQ retry job on failure. If the enqueue itself fails (Redis down at the exact catch moment), Razorpay's external retry cadence is the fallback.
+**Recommended default:** Defer until production data shows whether Razorpay's external retry + our event-driven retry is sufficient to drain `webhook_events` rows that end in `FAILED`. If orphans accumulate, add a Phase 9+ cron scanning `{status: 'FAILED', attempts < 7, receivedAt: {$gte: 24h ago}}` and enqueueing retries.
+
+Two failure modes that could produce orphaned FAILED rows:
+
+1. The enqueueRetry call in `dispatchAndFinalise` throws (Redis down) AND Razorpay doesn't retry externally (e.g. the 24h window expired).
+2. A BullMQ retry fails its own enqueue (worker crash between job-attempt failure and backoff schedule) — unlikely given BullMQ's internal Redis-level state machine but not impossible under pathological Redis partition scenarios.
+
+**Action needed:** Monitor `webhook_events.status = 'FAILED'` counts in production for 30 days post-launch. If the stale-orphan count exceeds ~1-2 per week, build the cron sweep. Otherwise continue deferring.
+
+---
+
 ## Template for closing an item
 
 When a decision closes, replace its block with:

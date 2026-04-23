@@ -102,11 +102,11 @@ cashfb_backend/
 │   ├── config/                       # env, db, redis, logger, kms, razorpay, socket
 │   ├── container.ts                  # awilix composition root
 │   ├── server.ts                     # Express + HTTP + Socket.IO bootstrap
-│   ├── worker.ts                     # BullMQ workers entrypoint
+│   ├── worker.ts                     # BullMQ workers entrypoint (Phase 7)
 │   ├── instrument.ts                 # Sentry init (--import)
 │   ├── modules/                      # feature slices (see below)
 │   ├── shared/                       # models, middleware, errors, utils
-│   ├── jobs/                         # one file per BullMQ job
+│   ├── workers/                      # BullMQ worker handlers + DLQ + shutdown (Phase 7)
 │   └── types/                        # ambient .d.ts
 ├── test/{integration,unit}/
 ├── scripts/                          # seed, migrate-razorpay-plans

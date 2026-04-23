@@ -64,6 +64,16 @@ Concrete examples in the codebase:
 
 4. **Daily prize-pool computation** — `src/modules/prize-pools/prize-pools.service.ts` `computeAndPublishPool()`. `PrizePool` has a unique index on `dayKey`. The pattern-1 upsert (`findOneAndUpdate + $setOnInsert + upsert, rawResult: true`) is the gate: insert-winner returns `{created: true}` with its freshly-computed values; race-loser reads `updatedExisting: true` and returns `{created: false}` with the pre-existing row's values (deterministic re-run semantics — caller sees what the original insert-winner computed, not a fresh compute that could disagree if AppConfig changed between runs). Phase 7's midnight-IST BullMQ cron relies on this for at-least-once delivery safety.
 
+5. **BullMQ job idempotency + domain-level predicate = belt-and-suspenders** — `src/workers/*.ts`. Every worker handler runs under BullMQ's at-least-once delivery guarantee (retries on crash, repeat-scheduler fires, manual re-enqueues). The domain-level gate (Pattern 1 upsert for prize-pool, convergent predicate for tier-sweep / reconcile-codes, `razorpayPaymentId` unique for invoice generation, status predicate for webhook-retry) is the correctness guarantee; BullMQ's `jobId` dedup is the cheap first line of defence. Duplicate handler invocations that slip past the jobId layer still produce correct outcomes.
+
+#### jobId strategy — loose vs stable
+
+A corollary of "the predicate is the gate" that surfaced in Phase 7: the jobId strategy for enqueued BullMQ jobs depends on whether the domain layer is convergent or first-writer-wins.
+
+- **Convergent-state predicates tolerate loose jobIds.** `sweepExpiredTiers` uses `{tier: $ne: 'PUBLIC'}` — duplicate continuation jobs all see the same filter and flip only still-expired users. Using `tier-sweep-continue-${Date.now()}` (unique per enqueue, so BullMQ dedup never fires) is correct: duplicate continuations are harmless, and a stable jobId would block legitimate parallel batches without adding safety. Pattern visible in `src/worker.ts`'s `enqueueContinuation`.
+- **Pattern 1 upserts demand stable jobIds.** `enqueueInvoice({paymentId})` uses `jobId: invoice-${paymentId}` so BullMQ blocks duplicate enqueues. Without this, two enqueues from webhook retries would both attempt the `$setOnInsert` on `SubscriptionPayment` — the second no-ops correctly at the Mongo layer, but the invoice handler does external side effects (KMS, S3, SES) that cost money and mailbox space per fire. Stable jobId saves redundant work; the domain is safe either way.
+- **Rule of thumb:** if the handler's domain layer is already idempotent via Mongo predicate AND has no external side effects, a loose jobId is acceptable. If the handler touches KMS / S3 / SES / any external API, use a stable jobId to minimise redundant firing. Correctness follows from the Mongo layer; jobId stability is a cost optimisation.
+
 #### Set-operators and counters drift
 
 When a set-modifying operator (`$addToSet`, `$pull`, `$push` with the right flags) may be a no-op AND an `$inc` on a denormalized counter is bundled into the same atomic update, the `$inc` fires regardless of whether the set-op changed anything. Every duplicate call drifts the counter away from the array's actual length.

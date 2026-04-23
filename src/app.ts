@@ -1,4 +1,5 @@
 import express, { type Express, type Request, type Response } from 'express';
+import { buildBullBoard } from './config/bullboard.js';
 import { env } from './config/env.js';
 import { DonationService } from './modules/donations/donations.service.js';
 import { RefundService } from './modules/refunds/refunds.service.js';
@@ -39,6 +40,16 @@ export function createApp(): Express {
   app.use('/api/v1', createWebhooksRouter(webhookService));
 
   app.use(express.json({ limit: '1mb' }));
+
+  // Bull-board dashboard. Skipped in test env — each call opens
+  // BullMQ Queues against Redis, which would block integration
+  // tests that just exercise the Express app. Workers (and
+  // therefore production bull-board) run in the separate
+  // `src/worker.ts` process in real deployments.
+  if (env.NODE_ENV !== 'test') {
+    const bullboard = buildBullBoard();
+    app.use(bullboard.basePath, bullboard.guard, bullboard.router);
+  }
 
   return app;
 }

@@ -178,25 +178,61 @@ Strict phase-by-phase execution order. Each phase ships green on `pnpm test && p
 
 ---
 
-## Phase 7 — Real-time + jobs polish (1 day)
+## Phase 7 — BullMQ infrastructure + cron primitives (1 day)
 
-**Goal:** Socket.IO with Redis adapter working across tasks, Bull Board mounted, all remaining jobs implemented.
+**Scope change (2026-04-23):** Phase 7 was originally "Real-time + jobs polish" bundling Socket.IO with BullMQ. Per Phase 7 sign-off, split into:
+
+- **Phase 7 (this entry)** — BullMQ infrastructure, 4 cron primitives, 2 event-driven workers, DLQ routing, Bull-board dashboard.
+- **Phase 7.5 (new)** — Socket.IO real-time layer.
+- `antifraud-scan` and `audit-archive` deferred to Phase 8+.
+
+**Goal:** Scheduled + event-driven jobs running under BullMQ with Redis, with operational visibility via Bull-board.
 
 **Tasks**
 
-- `src/config/socket.ts` with Redis adapter + auth middleware.
-- All socket events from `docs/ARCHITECTURE.md` §7 wired via `@socket.io/redis-emitter` in workers.
-- Bull Board at `/admin/queues` (SUPER_ADMIN only + IP allowlist in prod).
-- `subscription-expiry-sweep` job (every 15 min).
-- `antifraud-scan` job (nightly 02:00 IST).
-- `audit-archive` job (weekly): export logs > 90 days to S3 NDJSON, delete from primary.
+- `src/config/queues.ts` — parse `REDIS_URL` into BullMQ `ConnectionOptions`, lazy `getQueue(name)` registry, `makeWorker` factory, graceful `closeAllQueues`.
+- `src/workers/_registry.ts` — symbolic queue + job name + cron schedule constants.
+- `src/workers/shutdown.ts` — SIGTERM/SIGINT handlers, per-worker graceful close.
+- `src/worker.ts` — top-level entry process. Monolithic worker per product decision (single Node process, all Worker instances).
+- 4 cron primitives (all Asia/Kolkata tz):
+  - `prize-pool-daily` at `5 0 * * *` → `PrizePoolService.computeAndPublishPool`.
+  - `reconcile-codes-hourly` at `0 * * * *` → `reconcileCopiedCodes({cutoffMs: 24h})`.
+  - `top-donor-refresh` at `*/5 * * * *` → `DonationService.refreshTopDonorRanking`.
+  - `tier-expiry-sweep` at `0 2 * * *` → `sweepExpiredTiers` with self-re-enqueue on batch saturation.
+- 2 event-driven queues:
+  - `invoice` — `SubscriptionService.onCharged` enqueues `enqueueInvoice({paymentId})` after the transaction commits; worker runs the real `InvoiceService` (PDF + S3 + SES). Handler is idempotent via BullMQ `jobId: invoice-<paymentId>` dedup + domain-level short-circuit when payment already has `invoiceNumber`.
+  - `webhook-retry` — `WebhookService.dispatchAndFinalise` catch branch enqueues `enqueueWebhookRetry({eventId, attempt})`. Worker uses a custom backoff strategy matching Razorpay's cadence (`[5s, 30s, 5m, 30m, 2h, 6h, 24h]`) over 7 attempts.
+- DLQ routing (`src/workers/dlq.ts`): `failed` listener on each Worker copies exhausted jobs (where `attemptsMade >= attempts`) into a dedicated `dlq` queue. No worker consumes the DLQ — it's a durable inspection surface. Indefinite retention in Phase 7; Phase 8 adds a requeue action + TTL.
+- Bull-board mounted at `env.BULL_DASHBOARD_PATH` (default `/admin/queues`) with a placeholder JWT + `role: 'SUPER_ADMIN'` guard. Phase 8 replaces with the full admin middleware stack (IP allowlist + audit-log + per-action RBAC).
 
 **Acceptance criteria**
 
-- Broadcast from worker reaches clients connected to api-svc tasks.
-- Socket auth rejects missing/invalid JWT.
-- Device mismatch on socket handshake rejected.
-- Bull Board loads behind RBAC.
+- Repeatable schedulers registered idempotently (boot replay-safe via `upsertJobScheduler`).
+- Handlers accept POJO data (no BullMQ `Job` type coupling); clock injection via `scheduledFor` ISO string.
+- Worker process survives SIGTERM with no in-flight job loss.
+- Failed jobs beyond retry budget appear in DLQ with full context (original queue, jobId, data, failedReason, stackTrace, attemptsMade, failedAt).
+- Bull-board loads behind the placeholder guard and lists every registered queue including DLQ.
+
+---
+
+## Phase 7.5 — Socket.IO real-time layer (0.5-1 day)
+
+**Goal:** Socket.IO with Redis adapter working across api-svc tasks, auth middleware, device-mismatch handshake rejection, worker broadcast via `@socket.io/redis-emitter`.
+
+**Tasks**
+
+- `src/config/socket.ts` — Socket.IO server + `@socket.io/redis-adapter` for cross-task broadcast.
+- JWT auth middleware on the socket handshake (reuse Phase 2 `verifyAccessToken`).
+- Device-fingerprint check on handshake — reject on mismatch with the user's active session.
+- Worker-side broadcast helper (`@socket.io/redis-emitter`) for events emitted from the worker process (e.g. `top-donor.changed` from the Phase 7 cron, `pool.published` from the daily pool job).
+- Event table + payload shapes per `docs/ARCHITECTURE.md` §7.
+
+**Acceptance criteria**
+
+- Broadcast from a worker process reaches clients connected to any api-svc task.
+- Socket auth rejects missing/invalid/expired JWT.
+- Device mismatch on handshake rejected with a clear error code.
+- Cross-task delivery verified with two api-svc instances (can be a local docker-compose test).
 
 ---
 
