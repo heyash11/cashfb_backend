@@ -17,12 +17,19 @@ export interface AccessClaims {
   sub: string;
   tier: Tier;
   jti: string;
+  /** Unix seconds at issuance. Populated by `jose` via setIssuedAt() and
+   *  extracted by verifyAccessToken so force-logout middleware can
+   *  compare against the per-user cutoff in Redis. */
+  iat: number;
 }
 
 export interface RefreshClaims {
   sub: string;
   jti: string;
   family: string;
+  /** Unix seconds at issuance. Same semantics as AccessClaims.iat —
+   *  refresh endpoint uses it against the force-logout cutoff. */
+  iat: number;
 }
 
 /**
@@ -98,7 +105,16 @@ function requirePublicKey(): JoseKey {
   return publicKey;
 }
 
-export async function signAccessToken(claims: AccessClaims): Promise<string> {
+/**
+ * Input to signAccessToken. `iat` is NOT accepted here — it is set
+ * by jose via setIssuedAt() at signing time. It resurfaces on the
+ * verified AccessClaims so middleware can check the force-logout
+ * cutoff.
+ */
+export type SignAccessInput = Omit<AccessClaims, 'iat'>;
+export type SignRefreshInput = Omit<RefreshClaims, 'iat'>;
+
+export async function signAccessToken(claims: SignAccessInput): Promise<string> {
   accessIssued += 1;
   return new SignJWT({ tier: claims.tier })
     .setProtectedHeader({ alg: JWT_ALG, kid: KEY_ID })
@@ -110,7 +126,7 @@ export async function signAccessToken(claims: AccessClaims): Promise<string> {
     .sign(requirePrivateKey());
 }
 
-export async function signRefreshToken(claims: RefreshClaims): Promise<string> {
+export async function signRefreshToken(claims: SignRefreshInput): Promise<string> {
   refreshIssued += 1;
   return new SignJWT({ family: claims.family })
     .setProtectedHeader({ alg: JWT_ALG, kid: KEY_ID })
@@ -128,11 +144,12 @@ export async function verifyAccessToken(token: string): Promise<AccessClaims> {
     issuer: ISSUER,
   });
   if (!payload.sub || !payload.jti) throw new Error('access token missing sub/jti');
+  if (typeof payload.iat !== 'number') throw new Error('access token missing iat');
   const tier = payload['tier'];
   if (tier !== 'PUBLIC' && tier !== 'PRO' && tier !== 'PRO_MAX') {
     throw new Error('access token has invalid tier claim');
   }
-  return { sub: payload.sub, jti: payload.jti, tier };
+  return { sub: payload.sub, jti: payload.jti, tier, iat: payload.iat };
 }
 
 export async function verifyRefreshToken(token: string): Promise<RefreshClaims> {
@@ -141,9 +158,10 @@ export async function verifyRefreshToken(token: string): Promise<RefreshClaims> 
     issuer: ISSUER,
   });
   if (!payload.sub || !payload.jti) throw new Error('refresh token missing sub/jti');
+  if (typeof payload.iat !== 'number') throw new Error('refresh token missing iat');
   const family = payload['family'];
   if (typeof family !== 'string') throw new Error('refresh token missing family claim');
-  return { sub: payload.sub, jti: payload.jti, family };
+  return { sub: payload.sub, jti: payload.jti, family, iat: payload.iat };
 }
 
 /**

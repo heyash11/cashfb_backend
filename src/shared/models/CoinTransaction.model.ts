@@ -16,6 +16,13 @@ export interface CoinTransactionAttrs {
   balanceAfter: number;
   reference?: CoinTransactionReference;
   note?: string;
+  /**
+   * Required for ADMIN_CREDIT / ADMIN_DEBIT entries — the operator's
+   * justification, enforced at the admin-users Zod layer (min 10
+   * chars). Optional for other `type` values that are system-
+   * generated (SIGNUP_BONUS, POST_REWARD, VOTE_SPEND, REFUND).
+   */
+  reason?: string;
 }
 
 const CoinTransactionSchema = new Schema(
@@ -34,6 +41,7 @@ const CoinTransactionSchema = new Schema(
       id: { type: Types.ObjectId },
     },
     note: String,
+    reason: String,
   },
   baseSchemaOptions,
 );

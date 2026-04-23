@@ -9,6 +9,7 @@ import { CounterModel } from './Counter.model.js';
 import { CustomRoomModel } from './CustomRoom.model.js';
 import { CustomRoomResultModel } from './CustomRoomResult.model.js';
 import { DeviceFingerprintModel } from './DeviceFingerprint.model.js';
+import { DlqAuditModel } from './DlqAudit.model.js';
 import { DonationModel } from './Donation.model.js';
 import { LoginSessionModel } from './LoginSession.model.js';
 import { NotificationModel } from './Notification.model.js';
@@ -50,6 +51,7 @@ export const MODELS = {
   custom_rooms: CustomRoomModel,
   custom_room_results: CustomRoomResultModel,
   device_fingerprints: DeviceFingerprintModel,
+  dlq_audit: DlqAuditModel,
   donations: DonationModel,
   login_sessions: LoginSessionModel,
   notifications: NotificationModel,

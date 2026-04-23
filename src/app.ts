@@ -4,15 +4,26 @@ import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { AdminAuthService, createAdminAuthRouter } from './modules/admin-auth/index.js';
 import { createAdminCustomRoomsRouter } from './modules/admin-custom-rooms/index.js';
+import {
+  AdminDashboardService,
+  createAdminDashboardRouter,
+} from './modules/admin-dashboard/index.js';
+import { AdminDlqService, createAdminDlqRouter } from './modules/admin-dlq/index.js';
 import { createAdminDonationsRouter } from './modules/admin-donations/index.js';
 import { createAdminPostsRouter } from './modules/admin-posts/index.js';
+import {
+  AdminPrizePoolsService,
+  createAdminPrizePoolsRouter,
+} from './modules/admin-prize-pools/index.js';
 import { createAdminRedeemCodesRouter } from './modules/admin-redeem-codes/index.js';
 import { createAdminRefundsRouter } from './modules/admin-refunds/index.js';
 import { createAdminSubscriptionsRouter } from './modules/admin-subscriptions/index.js';
+import { AdminUsersService, createAdminUsersRouter } from './modules/admin-users/index.js';
 import { AdminCustomRoomsService } from './modules/custom-rooms/custom-rooms.admin.service.js';
 import { AdminDonationService } from './modules/donations/donations.admin.service.js';
 import { DonationService } from './modules/donations/donations.service.js';
 import { AdminPostService } from './modules/posts/posts.admin.service.js';
+import { PrizePoolService } from './modules/prize-pools/prize-pools.service.js';
 import { AdminRedeemCodeService } from './modules/redeem-codes/redeem-codes.admin.service.js';
 import { RefundService } from './modules/refunds/refunds.service.js';
 import { AdminSubscriptionService } from './modules/subscriptions/subscriptions.admin.service.js';
@@ -78,6 +89,24 @@ export function createApp(): Express {
   app.use('/api/v1/admin/subscriptions', createAdminSubscriptionsRouter(adminSubscriptionService));
   app.use('/api/v1/admin/custom-rooms', createAdminCustomRoomsRouter(adminCustomRoomsService));
   app.use('/api/v1/admin/refunds', createAdminRefundsRouter(refundService));
+
+  // Chunk 3a admin surface. admin-prize-pools needs both its own
+  // service (list + payout ledger) and the Phase 6 PrizePoolService
+  // (manual trigger). admin-dlq uses the BullMQ DLQ queue + the
+  // dlq_audit Mongo sidecar. admin-dashboard is Redis-cached with
+  // a 60s TTL (no active invalidation).
+  const adminUsersService = new AdminUsersService();
+  const adminPrizePoolsService = new AdminPrizePoolsService();
+  const prizePoolCoreService = new PrizePoolService();
+  const adminDashboardService = new AdminDashboardService();
+  const adminDlqService = new AdminDlqService();
+  app.use('/api/v1/admin/users', createAdminUsersRouter(adminUsersService));
+  app.use(
+    '/api/v1/admin/prize-pools',
+    createAdminPrizePoolsRouter(adminPrizePoolsService, prizePoolCoreService),
+  );
+  app.use('/api/v1/admin/dashboard', createAdminDashboardRouter(adminDashboardService));
+  app.use('/api/v1/admin/dlq', createAdminDlqRouter(adminDlqService));
 
   // Bull-board dashboard. Skipped in test env — each call opens
   // BullMQ Queues against Redis, which would block integration

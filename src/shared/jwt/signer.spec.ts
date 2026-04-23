@@ -32,7 +32,9 @@ describe('JWT signer (ephemeral keys)', () => {
       jti: 'jti_abc',
     });
     const claims = await verifyAccessToken(token);
-    expect(claims).toEqual({ sub: 'user_1', tier: 'PRO', jti: 'jti_abc' });
+    expect(claims).toMatchObject({ sub: 'user_1', tier: 'PRO', jti: 'jti_abc' });
+    // iat is set by jose at signing time; just assert shape.
+    expect(typeof claims.iat).toBe('number');
   });
 
   it('round-trips a refresh token and recovers claims', async () => {
@@ -42,11 +44,12 @@ describe('JWT signer (ephemeral keys)', () => {
       family: 'fam_1',
     });
     const claims = await verifyRefreshToken(token);
-    expect(claims).toEqual({
+    expect(claims).toMatchObject({
       sub: 'user_1',
       jti: 'jti_refresh_xyz',
       family: 'fam_1',
     });
+    expect(typeof claims.iat).toBe('number');
   });
 
   it('rejects a tampered access token', async () => {

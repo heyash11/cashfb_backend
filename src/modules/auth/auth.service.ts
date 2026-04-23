@@ -22,6 +22,7 @@ import { DeviceFingerprintRepository } from '../../shared/repositories/DeviceFin
 import { isDuplicateKeyError } from '../../shared/repositories/_base.repository.js';
 import { LoginSessionRepository } from '../../shared/repositories/LoginSession.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
+import { ForceLogoutStore } from '../../shared/services/force-logout.js';
 import { ageInYearsIst } from '../../shared/utils/date.js';
 import { generateReferralCode } from '../../shared/utils/referralCode.js';
 import type { OtpService } from './otp.types.js';
@@ -55,6 +56,7 @@ export interface AuthServiceDeps {
   sessionRepo?: LoginSessionRepository;
   coinTxRepo?: CoinTransactionRepository;
   deviceRepo?: DeviceFingerprintRepository;
+  forceLogoutStore?: ForceLogoutStore;
 }
 
 // ---- Tunables (would move to app_config in a later phase) ----
@@ -76,6 +78,7 @@ export class AuthService {
   private readonly sessionRepo: LoginSessionRepository;
   private readonly coinTxRepo: CoinTransactionRepository;
   private readonly deviceRepo: DeviceFingerprintRepository;
+  private readonly forceLogoutStore: ForceLogoutStore;
 
   constructor(deps: AuthServiceDeps) {
     this.otpService = deps.otpService;
@@ -83,6 +86,7 @@ export class AuthService {
     this.sessionRepo = deps.sessionRepo ?? new LoginSessionRepository();
     this.coinTxRepo = deps.coinTxRepo ?? new CoinTransactionRepository();
     this.deviceRepo = deps.deviceRepo ?? new DeviceFingerprintRepository();
+    this.forceLogoutStore = deps.forceLogoutStore ?? new ForceLogoutStore();
   }
 
   // ---------------------------------------------------------------
@@ -382,6 +386,22 @@ export class AuthService {
       claims = await verifyRefreshToken(input.refreshToken);
     } catch {
       throw new UnauthorizedError('Invalid or expired refresh token');
+    }
+
+    // Step 2a (Phase 8): force-logout denylist. If the admin forced
+    // a logout after this token was issued, revoke the entire family
+    // and refuse — a user whose access token just expired must not
+    // be able to bounce back on a still-live refresh token after
+    // being force-logged-out. Matches the "revoke on reuse" posture:
+    // stale-iat is effectively reuse of a dead session.
+    const cutoff = await this.forceLogoutStore.getCutoff(claims.sub);
+    if (cutoff !== null && claims.iat <= cutoff) {
+      await this.sessionRepo.revokeFamily(claims.family);
+      logger.warn(
+        { userId: claims.sub, family: claims.family, iat: claims.iat, cutoff },
+        'refresh after force-logout — family revoked',
+      );
+      throw new UnauthorizedError('Session forcibly terminated');
     }
 
     // Step 3: active-session lookup.

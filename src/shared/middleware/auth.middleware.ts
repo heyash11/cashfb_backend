@@ -1,20 +1,24 @@
 import type { NextFunction, Request, Response } from 'express';
 import { InternalError, UnauthorizedError } from '../errors/AppError.js';
 import { type AccessClaims, verifyAccessToken } from '../jwt/signer.js';
+import { forceLogoutStore } from '../services/force-logout.js';
 
 /**
  * Verify the incoming access JWT and attach claims to `req.user`.
  *
- * Intentionally DB-free. SECURITY.md §1 access tokens live 15 minutes
- * and carry only `sub`, `tier`, `jti`. We do NOT cross-check
- * `login_sessions` here — the 15-minute expiry is the revocation
- * guardrail for consumer tokens. Admin tokens (Phase 8) will layer a
- * Redis denylist on top for hard revocation; that's scoped to admin
- * middleware, not this one.
+ * Access tokens live 15 minutes (SECURITY.md §1) and carry `sub`,
+ * `tier`, `jti`, `iat`. The JWT signature + expiry handle ordinary
+ * session invalidation.
  *
- * Implication: if a refresh-revoked session's access token is still
- * within its 15-minute window, it keeps working until it expires.
- * Acceptable risk for consumer traffic; documented in SECURITY.md.
+ * Phase 8 Chunk 3a adds a Redis force-logout denylist on top: one
+ * GET per authenticated request against `auth:force-logout:<sub>`.
+ * When set, any token whose `iat` is <= the cutoff is rejected —
+ * the UX of "sign me out everywhere" without waiting the full 15
+ * minutes for the access token to expire on its own.
+ *
+ * The denylist is intentionally per-user (not per-jti): one write
+ * invalidates every outstanding access + refresh token for that
+ * user in a single Redis op.
  */
 export async function requireUser(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const header = req.header('authorization');
@@ -29,13 +33,23 @@ export async function requireUser(req: Request, _res: Response, next: NextFuncti
     return;
   }
 
+  let claims: AccessClaims;
   try {
-    const claims = await verifyAccessToken(token);
-    req.user = claims;
-    next();
+    claims = await verifyAccessToken(token);
   } catch {
     next(new UnauthorizedError('Invalid or expired token'));
+    return;
   }
+
+  try {
+    await forceLogoutStore.assertNotForceLoggedOut(claims.sub, claims.iat);
+  } catch (err) {
+    next(err);
+    return;
+  }
+
+  req.user = claims;
+  next();
 }
 
 /**
