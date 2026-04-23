@@ -24,6 +24,16 @@ export interface CustomRoomAttrs {
   notice?: string;
   tierRequired: 'PUBLIC' | 'PRO' | 'PRO_MAX';
   participantCount: number;
+  /**
+   * User IDs of registered participants. Bounded at 100 (BGMI's
+   * natural custom-room cap). `participantCount` is derived from
+   * the array length on every register() via `$addToSet + $size`
+   * semantics. If product later needs spectators, cancellation, or
+   * an audit trail of registration timestamps, migrate to a
+   * dedicated `custom_room_participations` collection — the read
+   * surface here is narrow (`isRegistered` check + count).
+   */
+  registeredParticipants: Types.ObjectId[];
   createdBy: Types.ObjectId;
 }
 
@@ -60,6 +70,7 @@ const CustomRoomSchema = new Schema(
       default: 'PUBLIC',
     },
     participantCount: { type: Number, default: 0 },
+    registeredParticipants: { type: [{ type: Types.ObjectId, ref: 'User' }], default: [] },
     createdBy: { type: Types.ObjectId, ref: 'AdminUser', required: true },
   },
   baseSchemaOptions,
