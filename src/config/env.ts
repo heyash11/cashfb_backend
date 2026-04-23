@@ -29,6 +29,10 @@ const EnvSchema = z
     MSG91_AUTH_KEY: z.string().optional(),
     MSG91_TEMPLATE_ID: z.string().optional(),
     MSG91_SENDER_ID: z.string().optional(),
+
+    AWS_REGION: z.string().min(1).optional(),
+    KMS_KEY_ID: z.string().min(1).optional(),
+    REDEEM_CODE_HASH_SECRET: z.string().min(32).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;
@@ -37,6 +41,9 @@ const EnvSchema = z
       'REDIS_URL',
       'JWT_PRIVATE_KEY_PEM',
       'JWT_PUBLIC_KEY_PEM',
+      'AWS_REGION',
+      'KMS_KEY_ID',
+      'REDEEM_CODE_HASH_SECRET',
     ] as const;
     for (const key of requiredInProd) {
       if (!data[key]) {
