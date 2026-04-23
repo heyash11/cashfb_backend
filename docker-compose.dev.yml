@@ -4,8 +4,12 @@ services:
     container_name: cashfb-mongo
     restart: unless-stopped
     command: ['--replSet', 'rs0', '--bind_ip_all']
+    # Non-standard host port to avoid colliding with a Homebrew
+    # mongod on macOS dev machines (common "brew services start
+    # mongodb-community" side-effect). Container-internal port is
+    # still 27017 so the replica-set healthcheck binds correctly.
     ports:
-      - '27017:27017'
+      - '27018:27017'
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -25,8 +29,10 @@ services:
     image: redis:7-alpine
     container_name: cashfb-redis
     restart: unless-stopped
+    # Non-standard host port — same collision-avoidance rationale as
+    # mongo above. Container internal port stays 6379.
     ports:
-      - '6379:6379'
+      - '6380:6379'
     volumes:
       - redis-data:/data
     healthcheck:

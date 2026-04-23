@@ -97,8 +97,20 @@ const EnvSchema = z
     // Dev/test defaults applied only after refine has passed. In
     // production these fallbacks are unreachable because refine would
     // have already failed the parse.
-    MONGO_URI: data.MONGO_URI ?? 'mongodb://localhost:27017/cashfb?directConnection=true',
-    REDIS_URL: data.REDIS_URL ?? 'redis://localhost:6379',
+    //
+    // Non-standard ports on purpose: docker-compose.dev.yml binds
+    // mongo → 27018 and redis → 6380 to avoid colliding with Homebrew
+    // mongod / redis on macOS dev machines.
+    //
+    // directConnection=true is REQUIRED for single-node docker replsets
+    // when connecting from the host. The replset self-advertises as
+    // localhost:27017 (container-internal), which breaks SDAM discovery
+    // from the host where we connect via 27018. directConnection bypasses
+    // SDAM — the driver talks to the explicit socket. Single-member
+    // replsets still provide session + transaction capability.
+    // DO NOT add replicaSet=rs0 — it re-enables SDAM and hangs.
+    MONGO_URI: data.MONGO_URI ?? 'mongodb://localhost:27018/cashfb?directConnection=true',
+    REDIS_URL: data.REDIS_URL ?? 'redis://localhost:6380',
   }));
 
 export type Env = z.infer<typeof EnvSchema>;
