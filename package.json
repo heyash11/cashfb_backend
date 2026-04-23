@@ -23,6 +23,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "seed": "tsx scripts/seed.ts",
+    "admin:create": "tsx scripts/admin-create.ts",
     "migrate:plans": "tsx scripts/migrate-razorpay-plans.ts",
     "prepare": "husky"
   },

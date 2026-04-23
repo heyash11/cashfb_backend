@@ -1,5 +1,6 @@
 import type { RequestContext } from '../shared/middleware/requestContext.js';
 import type { AccessClaims } from '../shared/jwt/signer.js';
+import type { AdminSession } from '../shared/sessions/admin-session.store.js';
 
 declare global {
   namespace Express {
@@ -10,6 +11,8 @@ declare global {
       context?: RequestContext;
       /** Populated by `requireUser` after access-token verification. */
       user?: AccessClaims;
+      /** Populated by `adminSession` middleware after session validation (Phase 8). */
+      admin?: AdminSession;
     }
   }
 }

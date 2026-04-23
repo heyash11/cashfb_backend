@@ -34,6 +34,13 @@ export interface AppConfigAttrs {
    */
   featureFlags?: Record<string, unknown>;
   razorpayPlanIds?: AppConfigRazorpayPlanIds;
+  /**
+   * Tenant-wide IP allowlist for the admin surface. Phase 8 middleware
+   * stack rejects any /api/v1/admin/* request from an IP not in this
+   * list (empty list = permissive; dev/staging fallback). Per-admin
+   * `ipAllowlist` narrows further (AND-intersection semantic).
+   */
+  adminIpAllowlist: string[];
 }
 
 const AppConfigSchema = new Schema(
@@ -70,6 +77,10 @@ const AppConfigSchema = new Schema(
       PRO: String,
       PRO_MAX: String,
     },
+
+    // Tenant-wide admin IP allowlist (Phase 8). Empty default = all IPs
+    // allowed. Per-admin `admin_users.ipAllowlist` narrows further.
+    adminIpAllowlist: { type: [String], default: [] },
   },
   baseSchemaOptions,
 );

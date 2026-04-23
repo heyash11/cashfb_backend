@@ -92,6 +92,18 @@ export class GeoBlockedError extends AppError {
   readonly code = 'GEO_BLOCKED';
 }
 
+/**
+ * Phase 8 §KYC+TDS gate on prize-winner claim path. Thrown when a
+ * user's cumulative FY prize value exceeds `AppConfig.kycThresholdAmount`
+ * AND their KYC status is not `VERIFIED`. 451 matches the legal-
+ * reasons semantic already used by GeoBlockedError; client maps to
+ * "PAN required to claim this prize."
+ */
+export class KycRequiredError extends AppError {
+  readonly httpStatus = 451;
+  readonly code = 'KYC_REQUIRED';
+}
+
 export class InternalError extends AppError {
   readonly httpStatus = 500;
   readonly code: string;
