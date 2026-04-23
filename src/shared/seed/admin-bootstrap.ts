@@ -16,13 +16,23 @@ import { AdminUserModel, type AdminUserAttrs } from '../models/AdminUser.model.j
 
 const BCRYPT_COST = 12;
 
+const AdminRoleSchema = z.enum(['SUPER_ADMIN', 'CONTENT_ADMIN', 'PAYMENT_ADMIN', 'SUPPORT_ADMIN']);
+
 const CreateAdminSchema = z.object({
   email: z.string().email(),
   password: z.string().min(12, 'Password must be at least 12 characters'),
   name: z.string().min(1).max(100).optional(),
+  /** Defaults to SUPER_ADMIN so the CLI bootstrap keeps current
+   *  behaviour. HTTP callers (admin-admin-users POST /admins) pass
+   *  this explicitly to mint narrower roles. */
+  role: AdminRoleSchema.default('SUPER_ADMIN'),
 });
 
-export type CreateAdminInput = z.infer<typeof CreateAdminSchema>;
+/** Input type — role is optional because the Zod schema defaults it
+ *  to SUPER_ADMIN on parse. `z.input` (not `z.infer`) gives the
+ *  pre-default shape so CLI callers can omit role without a TS
+ *  error. */
+export type CreateAdminInput = z.input<typeof CreateAdminSchema>;
 
 export interface CreateAdminResult {
   id: string;
@@ -44,7 +54,7 @@ export async function createAdmin(input: CreateAdminInput): Promise<CreateAdminR
     email,
     passwordHash,
     name: parsed.name ?? 'Admin',
-    role: 'SUPER_ADMIN',
+    role: parsed.role,
     permissions: [],
     twoFactor: { enabled: false, recoveryCodes: [] },
     ipAllowlist: [],

@@ -2,7 +2,24 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { buildBullBoard } from './config/bullboard.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
+import {
+  AdminAdminUsersService,
+  createAdminAdminUsersRouter,
+} from './modules/admin-admin-users/index.js';
+import {
+  AdminAdsConfigService,
+  createAdminAdsConfigRouter,
+} from './modules/admin-ads-config/index.js';
+import {
+  AdminAppConfigService,
+  createAdminAppConfigRouter,
+} from './modules/admin-app-config/index.js';
+import {
+  AdminAuditLogsService,
+  createAdminAuditLogsRouter,
+} from './modules/admin-audit-logs/index.js';
 import { AdminAuthService, createAdminAuthRouter } from './modules/admin-auth/index.js';
+import { AdminCmsService, createAdminCmsRouter } from './modules/admin-cms/index.js';
 import { createAdminCustomRoomsRouter } from './modules/admin-custom-rooms/index.js';
 import {
   AdminDashboardService,
@@ -10,6 +27,10 @@ import {
 } from './modules/admin-dashboard/index.js';
 import { AdminDlqService, createAdminDlqRouter } from './modules/admin-dlq/index.js';
 import { createAdminDonationsRouter } from './modules/admin-donations/index.js';
+import {
+  AdminNotificationsService,
+  createAdminNotificationsRouter,
+} from './modules/admin-notifications/index.js';
 import { createAdminPostsRouter } from './modules/admin-posts/index.js';
 import {
   AdminPrizePoolsService,
@@ -17,6 +38,7 @@ import {
 } from './modules/admin-prize-pools/index.js';
 import { createAdminRedeemCodesRouter } from './modules/admin-redeem-codes/index.js';
 import { createAdminRefundsRouter } from './modules/admin-refunds/index.js';
+import { AdminSponsorsService, createAdminSponsorsRouter } from './modules/admin-sponsors/index.js';
 import { createAdminSubscriptionsRouter } from './modules/admin-subscriptions/index.js';
 import { AdminUsersService, createAdminUsersRouter } from './modules/admin-users/index.js';
 import { AdminCustomRoomsService } from './modules/custom-rooms/custom-rooms.admin.service.js';
@@ -30,6 +52,7 @@ import { AdminSubscriptionService } from './modules/subscriptions/subscriptions.
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
+import { ZodError } from 'zod';
 import { AppError } from './shared/errors/AppError.js';
 
 export function createApp(): Express {
@@ -108,6 +131,26 @@ export function createApp(): Express {
   app.use('/api/v1/admin/dashboard', createAdminDashboardRouter(adminDashboardService));
   app.use('/api/v1/admin/dlq', createAdminDlqRouter(adminDlqService));
 
+  // Chunk 3b admin surface — config plumbing. Each router owns a
+  // narrow resource (cms content, ad placements, sponsors, audit
+  // logs, admin users, app config) plus the broadcast fan-out for
+  // notifications. Role gates are per-router; the middleware chain
+  // is applied inside each router factory.
+  const adminCmsService = new AdminCmsService();
+  const adminAdsConfigService = new AdminAdsConfigService();
+  const adminSponsorsService = new AdminSponsorsService();
+  const adminNotificationsService = new AdminNotificationsService();
+  const adminAuditLogsService = new AdminAuditLogsService();
+  const adminAdminUsersService = new AdminAdminUsersService();
+  const adminAppConfigService = new AdminAppConfigService();
+  app.use('/api/v1/admin/cms', createAdminCmsRouter(adminCmsService));
+  app.use('/api/v1/admin/ads-config', createAdminAdsConfigRouter(adminAdsConfigService));
+  app.use('/api/v1/admin/sponsors', createAdminSponsorsRouter(adminSponsorsService));
+  app.use('/api/v1/admin/notifications', createAdminNotificationsRouter(adminNotificationsService));
+  app.use('/api/v1/admin/audit-logs', createAdminAuditLogsRouter(adminAuditLogsService));
+  app.use('/api/v1/admin/admins', createAdminAdminUsersRouter(adminAdminUsersService));
+  app.use('/api/v1/admin/app-config', createAdminAppConfigRouter(adminAppConfigService));
+
   // Bull-board dashboard. Skipped in test env — each call opens
   // BullMQ Queues against Redis, which would block integration
   // tests that just exercise the Express app. Workers (and
@@ -136,6 +179,21 @@ export function createApp(): Express {
           code: err.code,
           message: err.message,
           ...(err.details ? { details: err.details } : {}),
+        },
+      });
+      return;
+    }
+    if (err instanceof ZodError) {
+      // Controllers call `schema.parse(req.body)` throughout the
+      // admin surface. Surface these as 400 VALIDATION_FAILED with
+      // the Zod issue list in details rather than hitting the 500
+      // fallback.
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Request validation failed',
+          details: { issues: err.issues },
         },
       });
       return;
