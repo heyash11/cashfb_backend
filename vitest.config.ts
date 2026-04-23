@@ -8,6 +8,15 @@ export default defineConfig({
     globals: false,
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
     /**
+     * 10 seconds, doubled from Vitest's 5-second default. Two
+     * integration specs (users.coins 150-row pagination and the
+     * audit-export 1000-row heap-delta check) intermittently exceed
+     * 5 s under full-suite load on shared hardware. Real hangs still
+     * fail, just 5 s later.
+     */
+    testTimeout: 10_000,
+    hookTimeout: 10_000,
+    /**
      * One-shot MongoMemoryReplSet boot per test run, shared across
      * all integration specs via `process.env.TEST_MONGO_URI`.
      */
