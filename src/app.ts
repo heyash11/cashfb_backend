@@ -1,12 +1,14 @@
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { buildBullBoard } from './config/bullboard.js';
 import { env } from './config/env.js';
+import { logger } from './config/logger.js';
 import { AdminAuthService, createAdminAuthRouter } from './modules/admin-auth/index.js';
 import { DonationService } from './modules/donations/donations.service.js';
 import { RefundService } from './modules/refunds/refunds.service.js';
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
+import { AppError } from './shared/errors/AppError.js';
 
 export function createApp(): Express {
   const app = express();
@@ -57,6 +59,44 @@ export function createApp(): Express {
     const bullboard = buildBullBoard();
     app.use(bullboard.basePath, ...bullboard.guards, bullboard.router);
   }
+
+  // Global error handler. MUST stay last — Express recognises this as
+  // error middleware by its 4-argument signature. AppError subclasses
+  // render with their configured httpStatus + code; any other throw
+  // is logged with stack and returns a generic 500 envelope. Stacks
+  // are never leaked to clients (even in dev) — logs are source of
+  // truth. CONVENTIONS.md §Errors.
+  app.use((err: unknown, req: Request, res: Response, next: NextFunction): void => {
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    if (err instanceof AppError) {
+      res.status(err.httpStatus).json({
+        success: false,
+        error: {
+          code: err.code,
+          message: err.message,
+          ...(err.details ? { details: err.details } : {}),
+        },
+      });
+      return;
+    }
+    const e = err as { message?: string; stack?: string };
+    logger.error(
+      {
+        err: { message: e.message, stack: e.stack },
+        method: req.method,
+        path: req.path,
+        reqId: req.id,
+      },
+      '[api] unhandled error',
+    );
+    res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL', message: 'Internal server error' },
+    });
+  });
 
   return app;
 }
