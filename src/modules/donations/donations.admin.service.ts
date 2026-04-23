@@ -67,4 +67,9 @@ export class AdminDonationService {
       throw new NotFoundError('Donation not found');
     }
   }
+
+  /** Audit before-snapshot helper used by the Phase 8 auditLog middleware. */
+  async getForAudit(donationId: Types.ObjectId | string): Promise<DonationAttrs | null> {
+    return this.donationRepo.findById(donationId);
+  }
 }

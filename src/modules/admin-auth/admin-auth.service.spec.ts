@@ -1,7 +1,6 @@
 import bcrypt from 'bcrypt';
 import type { Types } from 'mongoose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { redis } from '../../config/redis.js';
 import {
   clearAllCollections,
   connectTestMongo,
@@ -52,10 +51,12 @@ async function setTenantIpAllowlist(list: string[]): Promise<void> {
   );
 }
 
-async function cleanupSessions(): Promise<void> {
-  const keys = await redis.keys('admin:session:*');
-  if (keys.length > 0) await redis.del(...keys);
-}
+/**
+ * No cross-spec Redis cleanup. Each login creates a session with a
+ * 32-byte-hex random ID, so stale entries from prior tests can't
+ * collide with current ones. Bulk-wiping `admin:session:*` would
+ * stomp sibling spec files running in parallel worker threads.
+ */
 
 beforeAll(async () => {
   await connectTestMongo();
@@ -64,12 +65,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await disconnectTestMongo();
-  await cleanupSessions();
 });
 
 beforeEach(async () => {
   await clearAllCollections();
-  await cleanupSessions();
 });
 
 describe('AdminAuthService.login', () => {

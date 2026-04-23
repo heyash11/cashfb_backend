@@ -78,4 +78,9 @@ export class AdminPostService {
     if (status) filter.status = status;
     return this.postRepo.find(filter);
   }
+
+  /** Audit before-snapshot helper used by the Phase 8 auditLog middleware. */
+  async getForAudit(postId: Types.ObjectId | string): Promise<PostAttrs | null> {
+    return this.postRepo.findById(postId);
+  }
 }

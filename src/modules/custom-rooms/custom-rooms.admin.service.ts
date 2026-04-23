@@ -298,6 +298,11 @@ export class AdminCustomRoomsService {
     });
     return { items };
   }
+
+  /** Audit before-snapshot helper used by the Phase 8 auditLog middleware. */
+  async getForAudit(roomId: Types.ObjectId | string): Promise<CustomRoomAttrs | null> {
+    return this.roomRepo.findById(roomId);
+  }
 }
 
 function defaultEncryptor(): Encryptor {

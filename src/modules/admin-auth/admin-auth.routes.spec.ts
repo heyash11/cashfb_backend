@@ -1,8 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../app.js';
-import { redis } from '../../config/redis.js';
 import { ADMIN_SESSION_COOKIE } from '../../shared/middleware/admin-session.js';
 import { AdminSessionStore } from '../../shared/sessions/admin-session.store.js';
 
@@ -12,12 +11,13 @@ import { AdminSessionStore } from '../../shared/sessions/admin-session.store.js'
  * but were never plugged into the router — live smoke caught it on
  * /csrf-rotate. This suite asserts both authenticated POST routes
  * actually run csrfCheck and reject writes without the header.
+ *
+ * No cross-spec session cleanup here — Vitest runs spec files in
+ * parallel threads against the shared Redis, and a global wipe
+ * would stomp sessions seeded by sibling suites. Each seed uses a
+ * unique random sessionId so stale entries are harmless and expire
+ * via the idle TTL.
  */
-
-async function cleanupSessions(): Promise<void> {
-  const keys = await redis.keys('admin:session:*');
-  if (keys.length > 0) await redis.del(...keys);
-}
 
 async function seedSession(): Promise<string> {
   const store = new AdminSessionStore();
@@ -33,18 +33,6 @@ async function seedSession(): Promise<string> {
   });
   return session.sessionId;
 }
-
-beforeAll(async () => {
-  await cleanupSessions();
-});
-
-afterAll(async () => {
-  await cleanupSessions();
-});
-
-beforeEach(async () => {
-  await cleanupSessions();
-});
 
 describe('admin-auth routes — CSRF wiring', () => {
   const app = createApp();

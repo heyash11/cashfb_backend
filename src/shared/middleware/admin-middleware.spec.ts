@@ -6,7 +6,6 @@ import {
   connectTestMongo,
   disconnectTestMongo,
 } from '../../../test/testing/mongo.js';
-import { redis } from '../../config/redis.js';
 import { AppConfigModel } from '../models/AppConfig.model.js';
 import { MODELS } from '../models/index.js';
 import { AdminSessionStore, type AdminSession } from '../sessions/admin-session.store.js';
@@ -32,10 +31,12 @@ function mkRes(): Response {
   return {} as Response;
 }
 
-async function cleanupSessions(): Promise<void> {
-  const keys = await redis.keys('admin:session:*');
-  if (keys.length > 0) await redis.del(...keys);
-}
+/**
+ * No cross-spec Redis cleanup. seedValidSession() uses random hex
+ * sessionIds and adminIds so stale entries from prior tests are
+ * inert. Bulk-wiping `admin:session:*` would stomp sibling spec
+ * files running in parallel worker threads.
+ */
 
 beforeAll(async () => {
   await connectTestMongo();
@@ -44,12 +45,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await disconnectTestMongo();
-  await cleanupSessions();
 });
 
 beforeEach(async () => {
   await clearAllCollections();
-  await cleanupSessions();
 });
 
 // ---------------------------------------------------------------

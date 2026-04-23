@@ -3,8 +3,19 @@ import { buildBullBoard } from './config/bullboard.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { AdminAuthService, createAdminAuthRouter } from './modules/admin-auth/index.js';
+import { createAdminCustomRoomsRouter } from './modules/admin-custom-rooms/index.js';
+import { createAdminDonationsRouter } from './modules/admin-donations/index.js';
+import { createAdminPostsRouter } from './modules/admin-posts/index.js';
+import { createAdminRedeemCodesRouter } from './modules/admin-redeem-codes/index.js';
+import { createAdminRefundsRouter } from './modules/admin-refunds/index.js';
+import { createAdminSubscriptionsRouter } from './modules/admin-subscriptions/index.js';
+import { AdminCustomRoomsService } from './modules/custom-rooms/custom-rooms.admin.service.js';
+import { AdminDonationService } from './modules/donations/donations.admin.service.js';
 import { DonationService } from './modules/donations/donations.service.js';
+import { AdminPostService } from './modules/posts/posts.admin.service.js';
+import { AdminRedeemCodeService } from './modules/redeem-codes/redeem-codes.admin.service.js';
 import { RefundService } from './modules/refunds/refunds.service.js';
+import { AdminSubscriptionService } from './modules/subscriptions/subscriptions.admin.service.js';
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
@@ -49,6 +60,24 @@ export function createApp(): Express {
   // Only login + logout bypass the full chain — see admin-auth.routes.
   const adminAuthService = new AdminAuthService();
   app.use('/api/v1/admin/auth', createAdminAuthRouter(adminAuthService));
+
+  // Chunk 2 admin surface. Each router applies its own middleware
+  // chain (ipAllowlist → adminSession → csrfCheck → requireAnyRole
+  // → auditLog). Services are instantiated with default deps;
+  // refundService is shared with the webhook router above so the
+  // admin-initiated refund path and the webhook-received refund
+  // path see the same Razorpay client and the same repos.
+  const adminPostService = new AdminPostService();
+  const adminRedeemCodeService = new AdminRedeemCodeService();
+  const adminDonationService = new AdminDonationService();
+  const adminSubscriptionService = new AdminSubscriptionService();
+  const adminCustomRoomsService = new AdminCustomRoomsService();
+  app.use('/api/v1/admin/posts', createAdminPostsRouter(adminPostService));
+  app.use('/api/v1/admin/redeem-codes', createAdminRedeemCodesRouter(adminRedeemCodeService));
+  app.use('/api/v1/admin/donations', createAdminDonationsRouter(adminDonationService));
+  app.use('/api/v1/admin/subscriptions', createAdminSubscriptionsRouter(adminSubscriptionService));
+  app.use('/api/v1/admin/custom-rooms', createAdminCustomRoomsRouter(adminCustomRoomsService));
+  app.use('/api/v1/admin/refunds', createAdminRefundsRouter(refundService));
 
   // Bull-board dashboard. Skipped in test env — each call opens
   // BullMQ Queues against Redis, which would block integration

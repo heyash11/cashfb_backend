@@ -310,6 +310,11 @@ export class AdminRedeemCodeService {
   codeHash(normalizedCode: string): string {
     return computeCodeHash(normalizedCode, this.hashSecret);
   }
+
+  /** Audit before-snapshot helper used by the Phase 8 auditLog middleware. */
+  async getForAudit(codeId: Types.ObjectId | string): Promise<RedeemCodeAttrs | null> {
+    return this.redeemCodeRepo.findById(codeId);
+  }
 }
 
 function defaultEncryptor(): Encryptor {

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { redis } from '../../config/redis.js';
 import { AdminSessionStore, type AdminRole } from './admin-session.store.js';
 
@@ -21,18 +21,13 @@ function baseInput(overrides: Partial<Parameters<AdminSessionStore['create']>[0]
   };
 }
 
-async function cleanupKeysMatching(pattern: string): Promise<void> {
-  const keys = await redis.keys(pattern);
-  if (keys.length > 0) await redis.del(...keys);
-}
-
-beforeEach(async () => {
-  await cleanupKeysMatching('admin:session:*');
-});
-
-afterAll(async () => {
-  await cleanupKeysMatching('admin:session:*');
-});
+/**
+ * No cross-spec cleanup. Every `mkSessionId()` / `baseInput()` call
+ * uses random hex suffixes so tests don't collide with each other
+ * or with sibling spec files running in parallel Vitest worker
+ * threads against the shared Redis. Stale keys expire via the idle
+ * TTL.
+ */
 
 describe('AdminSessionStore', () => {
   it('create + get: round-trips session payload and indexes by adminId', async () => {

@@ -1,4 +1,4 @@
-import type { FilterQuery } from 'mongoose';
+import type { FilterQuery, Types } from 'mongoose';
 import type { SubscriptionAttrs } from '../../shared/models/Subscription.model.js';
 import type { SubscriptionPaymentAttrs } from '../../shared/models/SubscriptionPayment.model.js';
 import { SubscriptionRepository } from '../../shared/repositories/Subscription.repository.js';
@@ -88,5 +88,10 @@ export class AdminSubscriptionService {
     }
 
     return { totalPaise, byTier, count: payments.length };
+  }
+
+  /** Audit before-snapshot helper used by the Phase 8 auditLog middleware. */
+  async getForAudit(subId: Types.ObjectId | string): Promise<SubscriptionAttrs | null> {
+    return this.subRepo.findById(subId);
   }
 }
