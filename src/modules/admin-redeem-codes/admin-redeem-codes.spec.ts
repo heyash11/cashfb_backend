@@ -107,6 +107,11 @@ describe('admin-redeem-codes routes', () => {
       .send({ reason: 'supplier recall' });
 
     expect(res.status).toBe(200);
+    // Sensitive KMS-envelope fields must NOT leak into the HTTP
+    // response body. `codeCt` etc. are redacted by the auditLog
+    // middleware on the way out.
+    expect(res.body.data.codeCt).toBe('[REDACTED]');
+    expect(res.body.data.codeDekEnc).toBe('[REDACTED]');
 
     const reloaded = await RedeemCodeModel.findById(code._id);
     expect(reloaded?.status).toBe('VOID');
@@ -115,7 +120,7 @@ describe('admin-redeem-codes routes', () => {
     expect(audit).toBeTruthy();
     expect((audit?.before as { status?: string } | null)?.status).toBe('AVAILABLE');
     expect((audit?.after as { status?: string } | null)?.status).toBe('VOID');
-    // Sensitive fields are redacted by the audit middleware.
+    // Same redaction on the persisted audit_logs row.
     expect((audit?.before as { codeCt?: string } | null)?.codeCt).toBe('[REDACTED]');
   });
 });

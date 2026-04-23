@@ -46,10 +46,12 @@ describe('admin-admin-users routes', () => {
       });
     expect(create.status).toBe(200);
     expect(create.body.data.role).toBe('SUPPORT_ADMIN');
-    // passwordHash must NOT appear in the HTTP response body — only
-    // the persisted audit_logs row gets the (redacted) copy.
-    expect(create.body.data.passwordHash).toBeUndefined();
-    expect(create.body.data.twoFactor?.recoveryCodes).toEqual([]);
+    // The auditLog middleware redacts sensitive fields in BOTH the
+    // HTTP response body AND the persisted audit row. Redaction
+    // replaces the value with '[REDACTED]' rather than stripping
+    // the key entirely.
+    expect(create.body.data.passwordHash).toBe('[REDACTED]');
+    expect(create.body.data.twoFactor?.recoveryCodes).toBe('[REDACTED]');
 
     // Login exercises both findByEmail + bcrypt.compare against the
     // freshly-inserted row. Returns 200 only if the new admin's
@@ -62,10 +64,14 @@ describe('admin-admin-users routes', () => {
 
     const audit = await AuditLogModel.findOne({ action: 'ADMIN_USER_CREATE' });
     expect(audit).toBeTruthy();
-    // passwordHash is stripped at the controller before both the
-    // HTTP response and the audit insert, so it is absent entirely
-    // rather than '[REDACTED]'.
-    expect((audit?.after as { passwordHash?: string } | null)?.passwordHash).toBeUndefined();
+    // passwordHash + twoFactor.recoveryCodes redacted in the
+    // persisted audit_logs row (same redactSensitive pass that
+    // produced the HTTP response body).
+    expect((audit?.after as { passwordHash?: string } | null)?.passwordHash).toBe('[REDACTED]');
+    expect(
+      (audit?.after as { twoFactor?: { recoveryCodes?: unknown } } | null)?.twoFactor
+        ?.recoveryCodes,
+    ).toBe('[REDACTED]');
   });
 
   it('PATCH /:id/role flips role and captures before/after + reason', async () => {

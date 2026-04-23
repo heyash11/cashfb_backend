@@ -2,7 +2,6 @@ import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
 import { ValidationError } from '../../shared/errors/AppError.js';
 import type { AuditCaptureContext } from '../../shared/middleware/audit-log.js';
-import type { AdminUserAttrs } from '../../shared/models/AdminUser.model.js';
 import type { AdminAdminUsersService } from './admin-admin-users.service.js';
 import {
   AdminAdminUsersCreateBodySchema,
@@ -13,6 +12,17 @@ import {
   AdminAdminUsersToggle2FaBodySchema,
 } from './admin-admin-users.schemas.js';
 
+/**
+ * Sensitive-field redaction is handled centrally by the auditLog
+ * middleware (it applies `redactSensitive` to both the persisted
+ * audit row AND the HTTP response body). Controllers pass full
+ * model documents through and trust the middleware to strip
+ * passwordHash + twoFactor.secret + twoFactor.recoveryCodes
+ * before emission.
+ *
+ * The list endpoint is an exception — it is NOT audited, so the
+ * controller strips passwordHash locally on its wire-format map.
+ */
 export class AdminAdminUsersController {
   constructor(private readonly service: AdminAdminUsersService) {}
 
@@ -22,7 +32,7 @@ export class AdminAdminUsersController {
     if (q.role) filter.role = q.role;
     if (q.disabled !== undefined) filter.disabled = q.disabled;
     const result = await this.service.list(filter);
-    // Strip passwordHash from the wire response — never exposed.
+    // Non-audited read — strip passwordHash on the wire format.
     const items = result.items.map((a) => {
       const { passwordHash: _pw, ...rest } = a;
       return rest;
@@ -39,26 +49,17 @@ export class AdminAdminUsersController {
     };
     if (body.name !== undefined) createArgs.name = body.name;
     const after = await this.service.create(createArgs);
-    // auditLog middleware surfaces ctx.after as the HTTP response
-    // body; strip passwordHash + twoFactor.secret at the controller
-    // so they never reach the client. The audit_logs row is still
-    // redacted independently via redactSensitive.
-    return {
-      before: null,
-      after: sanitizeAdminUser(after),
-      resourceKind: 'AdminUser',
-      resourceId: after._id,
-    };
+    return { before: null, after, resourceKind: 'AdminUser', resourceId: after._id };
   };
 
   changeRole = async (req: Request): Promise<AuditCaptureContext> => {
     const id = parseObjectId(req.params.id, 'id');
     const body = AdminAdminUsersRoleChangeBodySchema.parse(req.body);
-    const before = sanitizeBefore(await this.service.getForAudit(id));
+    const before = await this.service.getForAudit(id);
     const after = await this.service.changeRole(id, body.role);
     return {
       before,
-      after: { ...sanitizeAdminUser(after), reason: body.reason },
+      after: { ...after, reason: body.reason },
       resourceKind: 'AdminUser',
       resourceId: id,
     };
@@ -67,11 +68,11 @@ export class AdminAdminUsersController {
   toggle2fa = async (req: Request): Promise<AuditCaptureContext> => {
     const id = parseObjectId(req.params.id, 'id');
     const body = AdminAdminUsersToggle2FaBodySchema.parse(req.body);
-    const before = sanitizeBefore(await this.service.getForAudit(id));
+    const before = await this.service.getForAudit(id);
     const after = await this.service.toggle2fa(id, body.enabled);
     return {
       before,
-      after: { ...sanitizeAdminUser(after), reason: body.reason },
+      after: { ...after, reason: body.reason },
       resourceKind: 'AdminUser',
       resourceId: id,
     };
@@ -92,39 +93,15 @@ export class AdminAdminUsersController {
   deactivate = async (req: Request): Promise<AuditCaptureContext> => {
     const id = parseObjectId(req.params.id, 'id');
     const body = AdminAdminUsersDeactivateBodySchema.parse(req.body);
-    const before = sanitizeBefore(await this.service.getForAudit(id));
+    const before = await this.service.getForAudit(id);
     const after = await this.service.deactivate(id);
     return {
       before,
-      after: { ...sanitizeAdminUser(after), reason: body.reason },
+      after: { ...after, reason: body.reason },
       resourceKind: 'AdminUser',
       resourceId: id,
     };
   };
-}
-
-/**
- * Strip passwordHash + twoFactor.secret from an AdminUser doc.
- * Audit middleware surfaces ctx.before/after as the HTTP response
- * AND as the audit_logs row. Without this sanitiser, the response
- * would leak the bcrypt hash to the SUPER_ADMIN caller; the audit
- * row redaction handles the persisted copy separately.
- */
-function sanitizeAdminUser(a: AdminUserAttrs): Omit<
-  AdminUserAttrs,
-  'passwordHash' | 'twoFactor'
-> & {
-  twoFactor: { enabled: boolean; recoveryCodes: string[] };
-} {
-  const { passwordHash: _pw, twoFactor, ...rest } = a;
-  return {
-    ...rest,
-    twoFactor: { enabled: twoFactor.enabled, recoveryCodes: [] },
-  };
-}
-
-function sanitizeBefore(a: AdminUserAttrs | null): ReturnType<typeof sanitizeAdminUser> | null {
-  return a ? sanitizeAdminUser(a) : null;
 }
 
 function parseObjectId(raw: unknown, field: string): Types.ObjectId {
