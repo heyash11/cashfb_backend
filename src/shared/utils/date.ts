@@ -42,3 +42,26 @@ export function ageInYearsIst(dob: Date): number {
   }
   return age;
 }
+
+/**
+ * Bounds of the Indian financial year containing `now`, in IST.
+ * FY runs Apr 1, 00:00:00.000 IST → Mar 31, 23:59:59.999 IST of
+ * the following calendar year. Returned as UTC `Date` instances
+ * representing the same wall-clock moment — Mongo queries compare
+ * by absolute timestamp, so the caller can pass these straight
+ * into `$gte` / `$lte`.
+ *
+ * Used by the KYC cumulative-FY computation on the prize-claim
+ * path (Phase 8 §KYC). A Jan-to-Mar `now` belongs to the FY that
+ * started the previous calendar year.
+ */
+export function currentFyBoundsIst(now: Date = new Date()): { start: Date; end: Date } {
+  const ist = dayjs(now).tz(IST_TZ);
+  const month = ist.month(); // 0-indexed; Jan = 0, Apr = 3
+  const year = ist.year();
+  const fyStartCalendarYear = month >= 3 ? year : year - 1;
+
+  const start = dayjs.tz(`${fyStartCalendarYear}-04-01 00:00:00.000`, IST_TZ).toDate();
+  const end = dayjs.tz(`${fyStartCalendarYear + 1}-03-31 23:59:59.999`, IST_TZ).toDate();
+  return { start, end };
+}

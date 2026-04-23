@@ -1,0 +1,955 @@
+{
+  "info": {
+    "name": "CashFB Admin",
+    "description": "Admin surface for the CashFB backend (Phase 8 Chunks 1–4). Import the companion environment (`CashFB-Admin.postman_environment.json`) and run the `_setup > Login` request first — its test script captures the session cookie + CSRF token into env variables that the pre-request script below injects into every subsequent request.\n\n57 endpoints across 7 folders. Every folder mirrors a route mount in `src/app.ts`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": { "type": "noauth" },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Inject X-CSRF-Token on every state-changing method.",
+          "const method = pm.request.method.toUpperCase();",
+          "if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) {",
+          "  const csrf = pm.environment.get('csrfToken');",
+          "  if (csrf) pm.request.headers.add({ key: 'X-CSRF-Token', value: csrf });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [{ "key": "baseUrl", "value": "{{baseUrl}}" }],
+  "item": [
+    {
+      "name": "_setup",
+      "item": [
+        {
+          "name": "Login (captures cookies + csrfToken)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "auth", "login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Validate the login envelope before writing env vars.",
+                  "// Throw with a human-readable reason so operators see",
+                  "// 'Login failed: ...' in Postman's test tab rather than",
+                  "// diagnosing downstream 401s.",
+                  "const res = pm.response.json();",
+                  "if (!res.success || !res.data || !res.data.csrfToken) {",
+                  "  throw new Error('Login failed: ' + JSON.stringify(res.error));",
+                  "}",
+                  "pm.environment.set('csrfToken', res.data.csrfToken);",
+                  "// Session cookie auto-captured by Postman's cookie jar;",
+                  "// the jar replays it on subsequent requests.",
+                  "pm.test('Login returned admin object', () => {",
+                  "  pm.expect(res.data.admin).to.have.property('role');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "auth", "logout"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.environment.unset('csrfToken');"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "GET /auth/me",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "POST /auth/csrf-rotate",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/auth/csrf-rotate",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "auth", "csrf-rotate"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Content",
+      "item": [
+        {
+          "name": "Posts",
+          "item": [
+            {
+              "name": "POST /posts",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"Daily trivia\",\n  \"dayKey\": \"2026-04-24\",\n  \"scheduledAt\": \"2026-04-24T10:00:00.000Z\",\n  \"tierRequired\": \"PUBLIC\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/posts",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "posts"]
+                }
+              }
+            },
+            {
+              "name": "PATCH /posts/:id",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{ \"status\": \"LIVE\" }" },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/posts/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "posts", ":id"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "DELETE /posts/:id",
+              "request": {
+                "method": "DELETE",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/posts/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "posts", ":id"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "GET /posts?dayKey=",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/posts?dayKey=2026-04-24",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "posts"],
+                  "query": [{ "key": "dayKey", "value": "2026-04-24" }]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Redeem Codes",
+          "item": [
+            {
+              "name": "POST /redeem-codes/upload (multipart)",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    { "key": "supplierName", "value": "Xoxoday", "type": "text" },
+                    { "key": "denomination", "value": "5000", "type": "text" },
+                    { "key": "file", "type": "file" }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/redeem-codes/upload",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "redeem-codes", "upload"]
+                }
+              }
+            },
+            {
+              "name": "POST /redeem-codes/publish",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"batchId\": \"<ObjectId>\",\n  \"postId\": \"<ObjectId>\",\n  \"count\": 100\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/redeem-codes/publish",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "redeem-codes", "publish"]
+                }
+              }
+            },
+            {
+              "name": "POST /redeem-codes/:id/void",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{ \"reason\": \"supplier recall of batch\" }" },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/redeem-codes/:id/void",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "redeem-codes", ":id", "void"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "GET /redeem-codes?status=",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/redeem-codes?status=PUBLISHED&limit=50",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "redeem-codes"],
+                  "query": [
+                    { "key": "status", "value": "PUBLISHED" },
+                    { "key": "limit", "value": "50" }
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /redeem-codes/export (streaming CSV)",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/redeem-codes/export",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "redeem-codes", "export"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "CMS",
+          "item": [
+            {
+              "name": "GET /cms",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/cms",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "cms"]
+                }
+              }
+            },
+            {
+              "name": "GET /cms/:key",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/cms/TERMS",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "cms", "TERMS"]
+                }
+              }
+            },
+            {
+              "name": "PUT /cms/:key",
+              "request": {
+                "method": "PUT",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{ \"html\": \"<p>Updated content</p>\" }" },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/cms/TERMS",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "cms", "TERMS"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sponsors",
+          "item": [
+            {
+              "name": "GET /sponsors?slot=1",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/sponsors?slot=1",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "sponsors"],
+                  "query": [{ "key": "slot", "value": "1" }]
+                }
+              }
+            },
+            {
+              "name": "POST /sponsors",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"slot\": 1,\n  \"imageUrl\": \"https://cdn.example.com/banner.png\",\n  \"linkUrl\": \"https://sponsor.example.com\",\n  \"priority\": 10\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/sponsors",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "sponsors"]
+                }
+              }
+            },
+            {
+              "name": "PATCH /sponsors/:id",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{ \"status\": \"PAUSED\" }" },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/sponsors/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "sponsors", ":id"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "DELETE /sponsors/:id",
+              "request": {
+                "method": "DELETE",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/sponsors/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "sponsors", ":id"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Custom Rooms",
+          "item": [
+            {
+              "name": "POST /custom-rooms",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"game\": \"BGMI\",\n  \"dayKey\": \"2026-04-24\",\n  \"scheduledAt\": \"2026-04-24T15:00:00.000Z\",\n  \"tierRequired\": \"PUBLIC\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/custom-rooms",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "custom-rooms"]
+                }
+              }
+            },
+            {
+              "name": "POST /custom-rooms/:id/credentials",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"roomId\": \"123456\", \"roomPwd\": \"secret\" }"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/custom-rooms/:id/credentials",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "custom-rooms", ":id", "credentials"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "POST /custom-rooms/:id/start",
+              "request": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/custom-rooms/:id/start",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "custom-rooms", ":id", "start"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "POST /custom-rooms/:id/end",
+              "request": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/custom-rooms/:id/end",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "custom-rooms", ":id", "end"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "POST /custom-rooms/:id/results",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{ \"inRoomImageUrl\": \"https://...\" }" },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/custom-rooms/:id/results",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "custom-rooms", ":id", "results"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "POST /custom-rooms/:id/winners",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dayKey\": \"2026-04-24\",\n  \"winners\": [{\n    \"userId\": \"<ObjectId>\",\n    \"type\": \"CUSTOM_ROOM\",\n    \"baseAmount\": 100,\n    \"tier\": \"PUBLIC\"\n  }]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/custom-rooms/:id/winners",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "custom-rooms", ":id", "winners"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "GET /custom-rooms",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/custom-rooms",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "custom-rooms"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Payments",
+      "item": [
+        {
+          "name": "Donations",
+          "item": [
+            {
+              "name": "GET /donations",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/donations",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "donations"]
+                }
+              }
+            },
+            {
+              "name": "POST /donations/:id/feature",
+              "request": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/donations/:id/feature",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "donations", ":id", "feature"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Subscriptions",
+          "item": [
+            {
+              "name": "GET /subscriptions",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/subscriptions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "subscriptions"]
+                }
+              }
+            },
+            {
+              "name": "GET /subscriptions/revenue",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/subscriptions/revenue?from=2026-04-01&to=2026-04-30",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "subscriptions", "revenue"],
+                  "query": [
+                    { "key": "from", "value": "2026-04-01" },
+                    { "key": "to", "value": "2026-04-30" }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refunds",
+          "item": [
+            {
+              "name": "POST /refunds",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"paymentId\": \"<ObjectId>\", \"reason\": \"customer requested refund\" }"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/refunds",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "refunds"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prize Pools",
+          "item": [
+            {
+              "name": "GET /prize-pools",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/prize-pools",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "prize-pools"]
+                }
+              }
+            },
+            {
+              "name": "POST /prize-pools/run",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dayKey\": \"2026-04-24\",\n  \"yesterdayDayKey\": \"2026-04-23\",\n  \"reason\": \"manual re-run after cron miss\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/prize-pools/run",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "prize-pools", "run"]
+                }
+              }
+            },
+            {
+              "name": "GET /prize-pools/winners",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/prize-pools/winners?dayKey=2026-04-24",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "prize-pools", "winners"],
+                  "query": [{ "key": "dayKey", "value": "2026-04-24" }]
+                }
+              }
+            },
+            {
+              "name": "POST /prize-pools/winners/:id/mark-payout",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"payoutStatus\": \"RELEASED\",\n  \"challanNo\": \"TDS-2026-04-0001\",\n  \"panLast4\": \"1234\",\n  \"reason\": \"manual release after TDS reconciliation\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/prize-pools/winners/:id/mark-payout",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "prize-pools", "winners", ":id", "mark-payout"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "GET /users?search=",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users?search=9999",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "users"],
+              "query": [{ "key": "search", "value": "9999" }]
+            }
+          }
+        },
+        {
+          "name": "POST /users/:id/block",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"fraud investigation opened by support\" }"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users/:id/block",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "users", ":id", "block"],
+              "variable": [{ "key": "id" }]
+            }
+          }
+        },
+        {
+          "name": "POST /users/:id/unblock",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"investigation closed, no fraud confirmed\" }"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users/:id/unblock",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "users", ":id", "unblock"],
+              "variable": [{ "key": "id" }]
+            }
+          }
+        },
+        {
+          "name": "POST /users/:id/coins",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"delta\": 50, \"reason\": \"manual credit — goodwill compensation ticket 4821\" }"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users/:id/coins",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "users", ":id", "coins"],
+              "variable": [{ "key": "id" }]
+            }
+          }
+        },
+        {
+          "name": "POST /users/:id/force-logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"suspicious session activity reported\" }"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users/:id/force-logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "users", ":id", "force-logout"],
+              "variable": [{ "key": "id" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Operations",
+      "item": [
+        {
+          "name": "GET /dashboard/metrics",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/dashboard/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "dashboard", "metrics"]
+            }
+          }
+        },
+        {
+          "name": "GET /dlq",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/dlq?includeRequeued=false&limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "dlq"],
+              "query": [
+                { "key": "includeRequeued", "value": "false" },
+                { "key": "limit", "value": "100" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /dlq/:jobId/requeue",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"reason\": \"investigated and confirmed safe to retry\" }"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/dlq/:jobId/requeue",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "dlq", ":jobId", "requeue"],
+              "variable": [{ "key": "jobId" }]
+            }
+          }
+        },
+        {
+          "name": "GET /audit-logs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-logs?limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "audit-logs"],
+              "query": [{ "key": "limit", "value": "100" }]
+            }
+          }
+        },
+        {
+          "name": "POST /notifications/broadcast",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target\": { \"mode\": \"tier\", \"tier\": \"PRO\" },\n  \"title\": \"Announcement\",\n  \"body\": \"New feature landing this week.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/notifications/broadcast",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "notifications", "broadcast"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Platform Admin",
+      "item": [
+        {
+          "name": "Admins CRUD",
+          "item": [
+            {
+              "name": "GET /admins",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/admins",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "admins"]
+                }
+              }
+            },
+            {
+              "name": "POST /admins",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"new-admin@cashfb.test\",\n  \"password\": \"change-this-password-now\",\n  \"name\": \"New Admin\",\n  \"role\": \"SUPPORT_ADMIN\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/admins",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "admins"]
+                }
+              }
+            },
+            {
+              "name": "PATCH /admins/:id/role",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"role\": \"PAYMENT_ADMIN\", \"reason\": \"promoted after payments-team training\" }"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/admins/:id/role",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "admins", ":id", "role"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "POST /admins/:id/toggle-2fa",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"enabled\": true, \"reason\": \"2FA enrolment requested by admin\" }"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/admins/:id/toggle-2fa",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "admins", ":id", "toggle-2fa"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "POST /admins/:id/force-logout",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"reason\": \"credential compromise investigation\" }"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/admins/:id/force-logout",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "admins", ":id", "force-logout"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            },
+            {
+              "name": "DELETE /admins/:id",
+              "request": {
+                "method": "DELETE",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"reason\": \"offboarding — policy violation\" }"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/admins/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "admins", ":id"],
+                  "variable": [{ "key": "id" }]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ads Config",
+          "item": [
+            {
+              "name": "GET /ads-config",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/ads-config",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "ads-config"]
+                }
+              }
+            },
+            {
+              "name": "PUT /ads-config/:placementKey",
+              "request": {
+                "method": "PUT",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"type\": \"BANNER\",\n  \"network\": \"ADMOB\",\n  \"adUnitIdAndroid\": \"ca-app-pub-...\",\n  \"enabled\": true,\n  \"minTierToHide\": \"PRO_MAX\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/ads-config/banner_home",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "ads-config", "banner_home"]
+                }
+              }
+            },
+            {
+              "name": "DELETE /ads-config/:placementKey",
+              "request": {
+                "method": "DELETE",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/ads-config/banner_home",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "ads-config", "banner_home"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "App Config",
+          "item": [
+            {
+              "name": "GET /app-config",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/app-config",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "app-config"]
+                }
+              }
+            },
+            {
+              "name": "PATCH /app-config",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{ \"maintenanceMode\": false, \"kycThresholdAmount\": 1000000 }"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/v1/admin/app-config",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["api", "v1", "admin", "app-config"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

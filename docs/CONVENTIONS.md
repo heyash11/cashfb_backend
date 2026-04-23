@@ -310,3 +310,40 @@ Examples in-tree:
 - `NoopCoinEventEmitter` (Phase 3) — satisfies `CoinEventEmitter` for coin-balance change notifications; Phase 7 swaps in the real Socket.IO emitter.
 
 Rule: if a service needs a collaborator whose real implementation is a phase or two out, do not inline-TODO it and do not skip the seam. Add the interface now so the eventual swap is one line in the container.
+
+## Audit-logging pattern
+
+Every admin write routes through the `auditLog(opts, handler)` middleware in `src/shared/middleware/audit-log.ts`. The handler returns an `AuditCaptureContext`:
+
+```ts
+{
+  before: unknown,           // snapshot loaded before the write (null for creates)
+  after:  unknown,           // the post-write row (null for deletes)
+  resourceKind?: string,     // e.g. 'User', 'Post', 'AdminUser'
+  resourceId?: ObjectId,
+}
+```
+
+The middleware:
+
+1. Applies `redactSensitive(ctx.before)` and `redactSensitive(ctx.after)` via the shared helper in `src/shared/utils/redact.ts`.
+2. Writes the redacted before/after into a new `audit_logs` row alongside `{actorId, actorEmail, action, ip, userAgent, resource}`.
+3. Renders the **redacted** `after` as the HTTP response body (`{ success: true, data: safeAfter }`).
+
+Both the persisted row AND the HTTP response come from the same redaction pass — a field in `SENSITIVE_FIELD_LIST` cannot leak on either channel. Controllers do NOT need their own sanitisers; if a new KMS-enveloped field is introduced, add it to `redact.ts`'s `SENSITIVE_LEAF_KEYS` (fields ending in `Ct`, `Iv`, `Tag`, `DekEnc` are the recognisable suffix convention).
+
+Reads are NOT audited — doing so would create a feedback loop (GET /audit-logs writing a row that appears in the next GET /audit-logs).
+
+## Empirical verification meta-rule
+
+Unit + integration tests catch correctness at the layer they're written for. They do NOT catch wire-format bugs, dev-infra gaps, or the interaction between middleware layers in a live Express app. Phase 8 chunks 1–3b surfaced five bugs this way — every one passed `pnpm test` but failed live smoke:
+
+1. Chunk 1 — no global error handler; `AppError` subclasses served as 500 HTML instead of JSON envelopes.
+2. Chunk 1 — `mongoose.connect()` was never called in `server.ts`; live requests hung on repository ops.
+3. Chunk 1 — `csrfCheck()` middleware existed + was unit-tested but never wired into the admin-auth router.
+4. Chunk 3a — Homebrew `mongod` shadowed the docker replset on `:27017`, silently downgrading every transaction to standalone.
+5. Chunk 3b — admin-create leaked `passwordHash` in the HTTP response because the audit middleware redacted only the persisted row, not the response body.
+
+**Rule:** every chunk commit runs a smoke sequence against live infra before `git commit`. Tests are necessary but insufficient. Smoke surface at minimum one endpoint per module, one happy path + one role-rejection + one side-effect inspection (Redis key, Mongo doc, BullMQ job). If the smoke reveals a bug, fix it in the same session — do not defer.
+
+The smoke outputs belong in the commit message or PR description as a proof-of-liveness record.

@@ -66,7 +66,11 @@ const AppConfigSchema = new Schema(
 
     // Compliance
     blockedStates: { type: [String], default: [] }, // ISO 3166-2:IN codes
-    kycThresholdAmount: { type: Number, default: 10_000 }, // paise (₹100)
+    // Phase 8 §KYC default: ₹10,000 (1,000,000 paise). Existing
+    // environments with the old ₹100 default must run the mongosh
+    // migration documented in ADMIN_OPERATIONS.md §Setup — the
+    // schema default only applies on insert, not update.
+    kycThresholdAmount: { type: Number, default: 1_000_000 },
     ageMin: { type: Number, default: 18 },
     maintenanceMode: { type: Boolean, default: false },
     featureFlags: Schema.Types.Mixed,

@@ -1,4 +1,4 @@
-import { type Types } from 'mongoose';
+import mongoose, { type Types } from 'mongoose';
 import { env } from '../../config/env.js';
 import type { Encryptor } from '../../shared/encryption/envelope.js';
 import { InMemoryEncryptor } from '../../shared/encryption/in-memory.js';
@@ -6,13 +6,17 @@ import { KmsEncryptor } from '../../shared/encryption/kms.js';
 import {
   ConflictError,
   ForbiddenError,
+  KycRequiredError,
   NotFoundError,
   UnauthorizedError,
 } from '../../shared/errors/AppError.js';
+import { PrizePoolWinnerModel } from '../../shared/models/PrizePoolWinner.model.js';
 import type { RedeemCodeAttrs } from '../../shared/models/RedeemCode.model.js';
 import { PostCompletionRepository } from '../../shared/repositories/PostCompletion.repository.js';
 import { RedeemCodeRepository } from '../../shared/repositories/RedeemCode.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
+import { KycService } from '../../shared/services/kyc.service.js';
+import { computeTds194BA } from '../../shared/services/tds.js';
 
 export interface ListForPostInput {
   postId: Types.ObjectId;
@@ -26,10 +30,24 @@ export interface ListForPostItem {
   status: 'PUBLISHED' | 'COPIED' | 'CLAIMED' | 'EXPIRED' | 'VOID';
 }
 
+/**
+ * TDS side-effect shape returned alongside a successful claim.
+ * `null` is an explicit "evaluated, not applicable" signal — the
+ * claim succeeded but no linked PrizePoolWinner row was found for
+ * (userId, redeemCodeId), so there was nothing to deduct TDS on.
+ * Chunk 4 sign-off §R2: explicit null beats omitted field.
+ */
+export interface ClaimTdsResult {
+  deductedPaise: number;
+  appliedOn: 'PrizePoolWinner';
+  winnerId: Types.ObjectId;
+}
+
 export interface ClaimResult {
   codeId: Types.ObjectId;
   plaintextCode: string;
   denomination: number;
+  tds: ClaimTdsResult | null;
 }
 
 export interface RedeemCodeServiceDeps {
@@ -37,26 +55,32 @@ export interface RedeemCodeServiceDeps {
   postCompletionRepo?: PostCompletionRepository;
   userRepo?: UserRepository;
   encryptor?: Encryptor;
+  kycService?: KycService;
+  clock?: () => Date;
 }
 
 /**
  * User-facing redeem-code endpoints. Per CLAUDE.md §0.3 the FCFS
- * primitive is a single atomic `findOneAndUpdate` — no transactions,
- * no read-then-update. Tier gating is intentionally absent in MVP
- * (see plan §7c and OPEN_DECISIONS #1/#4); the `userTier` parameter
- * exists for forward compatibility with Phase 6 multiplier awards.
+ * primitive is a single atomic `findOneAndUpdate` — the winner is
+ * decided by the mongo predicate. Phase 8 Chunk 4 adds a KYC+TDS
+ * gate in front of the atomic op and a transactional
+ * PrizePoolWinner flip behind it (see `claim()` for detail).
  */
 export class RedeemCodeService {
   private readonly redeemCodeRepo: RedeemCodeRepository;
   private readonly postCompletionRepo: PostCompletionRepository;
   private readonly userRepo: UserRepository;
   private readonly encryptor: Encryptor;
+  private readonly kycService: KycService;
+  private readonly clock: () => Date;
 
   constructor(deps: RedeemCodeServiceDeps = {}) {
     this.redeemCodeRepo = deps.redeemCodeRepo ?? new RedeemCodeRepository();
     this.postCompletionRepo = deps.postCompletionRepo ?? new PostCompletionRepository();
     this.userRepo = deps.userRepo ?? new UserRepository();
     this.encryptor = deps.encryptor ?? defaultEncryptor();
+    this.kycService = deps.kycService ?? new KycService();
+    this.clock = deps.clock ?? (() => new Date());
   }
 
   /**
@@ -84,19 +108,29 @@ export class RedeemCodeService {
   }
 
   /**
-   * FCFS claim. The atomic op is a single `findOneAndUpdate` with
-   * `status: 'PUBLISHED'` as a predicate — exactly one concurrent
-   * caller wins; every other sees `null` and surfaces `CODE_TAKEN`.
+   * FCFS claim with the Phase 8 KYC gate + transactional
+   * PrizePoolWinner settlement.
    *
-   * Pre-checks (user-blocked, post-completed) run BEFORE the atomic
-   * op, outside any transaction. They are advisory only: if the user
-   * is blocked in the ~millisecond window between the check and the
-   * op, they still get a code. Admin block workflows take
-   * multi-second rotations (audit log write + UI refresh); this race
-   * window is not user-reachable. The Phase 7 fraud sweep catches
-   * any exotic drift at zero incremental complexity here. Do NOT
-   * "fix" this with a two-phase CAS — it would buy nothing and add a
-   * round trip.
+   * Flow:
+   *   1. Advisory pre-checks (user block, post completion).
+   *   2. KYC gate via `KycService.evaluateGate` — throws
+   *      `KycRequiredError(451)` when cumulative FY winnings exceed
+   *      `AppConfig.kycThresholdAmount` AND `user.kyc.status !==
+   *      'VERIFIED'`.
+   *   3. Transaction:
+   *        a. Atomic FCFS flip (PUBLISHED → COPIED).
+   *        b. If a matching `PrizePoolWinner` row exists for
+   *           `(userId, redeemCodeId)`, compute TDS via §194BA,
+   *           set `payoutStatus: RELEASED`, write `tdsDeducted`,
+   *           `releasedAt`, and `panAtPayout` from the user's
+   *           stored panLast4 (if any).
+   *        c. No linked winner row → no-op on that side; `tds`
+   *           field in the response is `null` (explicit signal).
+   *
+   * Pre-checks stay advisory (outside the transaction) to avoid a
+   * round-trip in the happy path; the atomic predicate is still the
+   * final guarantee for FCFS correctness. See the Phase 3 commit
+   * message for the original reasoning.
    */
   async claim(codeId: Types.ObjectId, userId: Types.ObjectId): Promise<ClaimResult> {
     const code = await this.redeemCodeRepo.findById(codeId);
@@ -117,23 +151,74 @@ export class RedeemCodeService {
       throw new ForbiddenError('POST_NOT_COMPLETED', 'Complete the post before claiming');
     }
 
-    const claimed = await this.redeemCodeRepo.atomicFcfsClaim(codeId, userId);
-    if (!claimed) {
-      throw new ConflictError('CODE_TAKEN', 'This code has already been copied');
+    const gate = await this.kycService.evaluateGate(userId, this.clock());
+    if (!gate.allowed) {
+      throw new KycRequiredError('PAN required to claim this prize', {
+        thresholdPaise: gate.thresholdPaise,
+        cumulativePaise: gate.cumulativePaise,
+        kycStatus: gate.kycStatus,
+      });
     }
 
-    const plaintext = await this.encryptor.decryptField({
-      ct: claimed.codeCt,
-      iv: claimed.codeIv ?? '',
-      tag: claimed.codeTag ?? '',
-      dekEnc: claimed.codeDekEnc ?? '',
-    });
+    const session = await mongoose.startSession();
+    try {
+      let claimed: RedeemCodeAttrs | null = null;
+      let tds: ClaimTdsResult | null = null;
 
-    return {
-      codeId: claimed._id,
-      plaintextCode: plaintext,
-      denomination: claimed.denomination,
-    };
+      await session.withTransaction(async () => {
+        claimed = await this.redeemCodeRepo.atomicFcfsClaim(codeId, userId, { session });
+        if (!claimed) return;
+
+        // Match the PrizePoolWinner row written by the daily-pool
+        // cron (or admin assignWinners). Either indexing on
+        // redeemCodeId OR on (userId, type: GIFT_CODE) would work;
+        // redeemCodeId is the authoritative linkage when present.
+        const winner = await PrizePoolWinnerModel.findOneAndUpdate(
+          {
+            userId,
+            redeemCodeId: codeId,
+            payoutStatus: 'PENDING',
+          },
+          {
+            $set: {
+              payoutStatus: 'RELEASED',
+              releasedAt: this.clock(),
+              ...(user.kyc.panLast4 ? { panAtPayout: `XXXXX${user.kyc.panLast4}` } : {}),
+            },
+          },
+          { session, new: true },
+        );
+        if (winner && typeof winner.finalAmount === 'number') {
+          const deductedPaise = computeTds194BA(winner.finalAmount);
+          await PrizePoolWinnerModel.updateOne(
+            { _id: winner._id },
+            { $set: { tdsDeducted: deductedPaise } },
+            { session },
+          );
+          tds = { deductedPaise, appliedOn: 'PrizePoolWinner', winnerId: winner._id };
+        }
+      });
+
+      if (!claimed) {
+        throw new ConflictError('CODE_TAKEN', 'This code has already been copied');
+      }
+
+      const plaintext = await this.encryptor.decryptField({
+        ct: (claimed as RedeemCodeAttrs).codeCt,
+        iv: (claimed as RedeemCodeAttrs).codeIv ?? '',
+        tag: (claimed as RedeemCodeAttrs).codeTag ?? '',
+        dekEnc: (claimed as RedeemCodeAttrs).codeDekEnc ?? '',
+      });
+
+      return {
+        codeId: (claimed as RedeemCodeAttrs)._id,
+        plaintextCode: plaintext,
+        denomination: (claimed as RedeemCodeAttrs).denomination,
+        tds,
+      };
+    } finally {
+      await session.endSession();
+    }
   }
 
   /**

@@ -236,22 +236,28 @@ Strict phase-by-phase execution order. Each phase ships green on `pnpm test && p
 
 ---
 
-## Phase 8 — Admin panel APIs (0.5 day)
+## Phase 8 — Admin panel APIs — ✅ COMPLETE
 
-**Goal:** Every admin surface from `docs/API.md` §4.10 exists and is RBAC-gated with audit logging.
+Delivered across four chunks + three latent-bug fixes + one dev-infra fix + one audit-redaction correction. 57 admin endpoints behind the `ipAllowlist → adminSession → csrfCheck → requireAnyRole → auditLog` chain. 367 tests pass against a single-node MongoMemoryReplSet.
 
-**Tasks**
+**Chunk decomposition (as built):**
 
-- Implement all admin endpoints.
-- Audit-log middleware on every write: captures `actor`, `action`, `resource`, `before`, `after`, IP, user agent.
-- Dashboard metrics endpoint: DAU, MAU, vote count today, pool today, gift-code availability, active rooms, top donor, MTD revenue. Cache in Redis 60s.
-- CSV export endpoints stream (use `res.write` chunks, not buffered responses).
+| Chunk   | Delivered                                                                                                                                         | Commit        |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 1       | admin auth infra (Redis sessions, CSRF triple-match, IP allowlist, RBAC, audit wrapper) + bootstrap CLI                                           | `d8532ef`     |
+| 1-fix-a | `mongoose.connect` on api boot                                                                                                                    | `86f20dc`     |
+| 1-fix-b | global `AppError → JSON` error handler                                                                                                            | `aff6c6f`     |
+| 1-fix-c | wire csrfCheck on POST /logout + /csrf-rotate                                                                                                     | `c78612b`     |
+| 2       | HTTP mounts for 6 pre-existing admin services (posts, redeem-codes, donations, subscriptions, custom-rooms, refunds)                              | `ec5da79`     |
+| 3a      | admin-users (block, coin-adjust, force-logout with Redis cutoff) + admin-prize-pools + admin-dashboard (cached) + admin-dlq (sidecar Mongo audit) | `1f50444`     |
+| 3a-fix  | docker compose on :27018/6380 to sidestep brew mongod, enabled transactions                                                                       | `19fc112`     |
+| 3b      | admin-cms, admin-ads-config, admin-sponsors, admin-notifications, admin-audit-logs, admin-admin-users, admin-app-config                           | `4c2ddfe`     |
+| 3b-fix  | redact sensitive fields in HTTP response (not just persisted audit row)                                                                           | `edf89e8`     |
+| 4       | KYC + TDS claim gate, postman collection (57 requests), docs                                                                                      | (this commit) |
 
-**Acceptance criteria**
+**Goal met.** Every admin surface from `docs/API.md` §4.10 exists and is RBAC-gated with audit logging. Audit-log middleware captures `actor`, `action`, `resource`, `before`, `after`, IP, user agent — AND applies `redactSensitive` to both persisted row and HTTP response body. Dashboard metrics endpoint is Redis-cached 60 s with `generatedAt` + `cached` surfaced. CSV exports stream via `res.write` chunks (redeem-code audit export).
 
-- Every admin write produces an `audit_logs` row.
-- RBAC denies cross-role access (SUPPORT_ADMIN cannot reach PAYMENT_ADMIN endpoints).
-- Dashboard returns within 500ms at warm cache.
+**Phase 8 §KYC + TDS (Chunk 4):** `POST /redeem-codes/:id/copy` runs a three-part gate on the service side — advisory pre-checks, `KycService.evaluateGate`, then a Mongo transaction that atomically flips the FCFS code + writes TDS onto the linked `PrizePoolWinner` row. Threshold via `AppConfig.kycThresholdAmount` (default 1,000,000 paise = ₹10,000). Closes `OPEN_DECISIONS.md` #6 + #17.
 
 ---
 

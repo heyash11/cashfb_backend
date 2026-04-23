@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ageInYearsIst, dayKeyIst, nowIst } from './date.js';
+import { ageInYearsIst, currentFyBoundsIst, dayKeyIst, nowIst } from './date.js';
 
 describe('date utils', () => {
   it('nowIst returns a dayjs in IST', () => {
@@ -40,5 +40,23 @@ describe('date utils', () => {
     const today = nowIst();
     const dob = new Date(Date.UTC(today.year() - 25, today.month(), today.date()));
     expect(ageInYearsIst(dob)).toBe(25);
+  });
+
+  it('currentFyBoundsIst: Apr–Dec date maps to same-year FY start', () => {
+    // 2026-07-15 12:00 IST is clearly inside FY 2026-27.
+    const midFy = new Date(Date.UTC(2026, 6, 15, 6, 30)); // 12:00 IST
+    const { start, end } = currentFyBoundsIst(midFy);
+    // Start: 2026-04-01 00:00 IST = 2026-03-31 18:30 UTC
+    expect(start.toISOString()).toBe('2026-03-31T18:30:00.000Z');
+    // End: 2027-03-31 23:59:59.999 IST = 2027-03-31 18:29:59.999 UTC
+    expect(end.toISOString()).toBe('2027-03-31T18:29:59.999Z');
+  });
+
+  it('currentFyBoundsIst: Jan–Mar date maps to previous-year FY start', () => {
+    // 2027-02-15 12:00 IST is still FY 2026-27 (started Apr 2026).
+    const lateFy = new Date(Date.UTC(2027, 1, 15, 6, 30));
+    const { start, end } = currentFyBoundsIst(lateFy);
+    expect(start.toISOString()).toBe('2026-03-31T18:30:00.000Z');
+    expect(end.toISOString()).toBe('2027-03-31T18:29:59.999Z');
   });
 });

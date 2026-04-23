@@ -271,9 +271,29 @@ Architecture supports toggling these on with a single config change, no redeploy
 
 ### TDS 194BA
 
-Every `prize_pool_winners` row computes `tdsDeducted = Math.round(finalAmount * 0.30)`. For in-kind prizes (gift cards), apply gross-up logic: reduce the face value of the awarded code so that `faceValue - TDS = prizeValue`, or collect the tax separately from the winner.
+Every successful claim on a linked `PrizePoolWinner` row computes `tdsDeducted = Math.round(finalAmount * 0.30)` via `computeTds194BA()` in `src/shared/services/tds.ts`. Flat 30% — no threshold, no slab; statutory rate.
 
-Store `tdsChallanNo` after quarterly deposit via Challan 281. Generate Form 16A quarterly (Form 26Q filing).
+**No face-value modification** (Phase 8 §8j decision). The gift-code denomination stays at the original value awarded to the winner. TDS is a company liability recorded on `PrizePoolWinner.tdsDeducted` for accounting — the company absorbs the tax, does not deduct from the winner. This keeps the winner UX clean ("you won ₹500, here's your ₹500 code") while preserving the book-keeping handle for quarterly reconciliation.
+
+Quarterly ops process:
+
+- Deposit deducted amount via Challan 281.
+- Record `tdsChallanNo` on each payout row via `POST /admin/prize-pools/winners/:id/mark-payout`.
+- Generate Form 16A quarterly (Form 26Q filing).
+
+### KYC
+
+Indian users whose cumulative financial-year prize winnings exceed `AppConfig.kycThresholdAmount` (default ₹10,000 = 1,000,000 paise) must have PAN on file (`users.kyc.status === 'VERIFIED'`) before they can claim another prize. Enforced at the `POST /redeem-codes/:id/copy` path by `KycService.evaluateGate()`; blocks with `KycRequiredError(451)` + `details: {thresholdPaise, cumulativePaise, kycStatus}`.
+
+**Cumulative definition:** sum of `PrizePoolWinner.finalAmount` in the current IST financial year (Apr 1 → Mar 31) where `payoutStatus ∈ {PENDING, RELEASED}`. WITHHELD + VOID are excluded — they represent money the company does not intend to pay out.
+
+**PAN handling:**
+
+- Last-4 in plaintext at `users.kyc.panLast4` for display + write-through to `PrizePoolWinner.panAtPayout` (`XXXXX1234` mask).
+- Full PAN stored as KMS-enveloped ciphertext via the canonical envelope (`panCt`, `panIv`, `panTag`, `panDekEnc`). Regulated access only — decrypt path is ops-surface, not user-surface.
+- `verifiedAt` set at the moment ops flips `kyc.status` to `'VERIFIED'`. Runbook for the manual verification flow is in `ADMIN_OPERATIONS.md` §5.
+
+**Threshold tuning.** Runtime override via `PATCH /api/v1/admin/app-config { kycThresholdAmount: N }`. Legal/compliance sets the number; engineering hands them the dial.
 
 ### GST
 

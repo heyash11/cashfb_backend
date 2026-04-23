@@ -98,13 +98,12 @@ Then provide the ad unit IDs (Android + iOS). We enter them in the admin panel `
 
 ## 6. KYC threshold
 
-**Status:** :red_circle: Open
-**Blocks:** Phase 4 (code claim gate)
-**Recommended default:** ₹100 (10,000 paise). Any prize claim above ₹100 requires PAN.
+**Status:** :white_check_mark: CLOSED (Phase 8 Chunk 4)
+**Default:** ₹10,000 (1,000,000 paise). Schema default in `AppConfig.kycThresholdAmount`. Existing environments migrate via the mongosh update documented in `ADMIN_OPERATIONS.md` §Setup. Runtime override via `PATCH /api/v1/admin/app-config`.
 
-Compliance framing: TDS 194BA applies on prize payouts. Having PAN on file before payout is both TDS-practical and a fraud deterrent.
+Compliance framing kept intact: TDS §194BA applies on prize payouts; having PAN on file before payout is both TDS-practical and a fraud deterrent. The ₹10,000 threshold is high enough that routine sub-₹100 trivia rewards don't trigger the gate, low enough that payouts reaching regulatory interest levels do.
 
-**Action needed:** Owner confirms default, or sets a different threshold. Value lives in `app_config.kycThresholdAmount`.
+**Closed by:** Phase 8 Chunk 4 commit — gate implementation at `KycService.evaluateGate` + `RedeemCodeService.claim`.
 
 ---
 
@@ -272,20 +271,23 @@ Low-effort (one working day including DNS propagation) but must be done before t
 
 ## 17. KYC + TDS gate on prize-winner claim path (Phase 8)
 
-**Status:** :red_circle: Open
-**Blocks:** Any meaningful prize payout. Phase 6 writes `PrizePoolWinner` rows with `payoutStatus: 'PENDING'` and `tdsDeducted: 0`; redemption of those rows is presently ungated.
-**Recommended default:** Before a winner can redeem a prize (Phase 4 gift-code claim path, any future custom-room payout), the claim endpoint must check KYC status + compute TDS 194BA (30%) above the configured threshold.
+**Status:** :white_check_mark: CLOSED (Phase 8 Chunk 4)
 
-Upstream dependency: **OPEN_DECISIONS #6** (KYC threshold) sets the paise-amount above which PAN is required. Until #6 closes, the gate threshold isn't locked.
+**Implementation shipped:**
 
-**Action needed:** Phase 8 admin/claim work must:
+- **Gate location:** `src/modules/redeem-codes/redeem-codes.service.ts` → `claim()` method. Runs after advisory pre-checks and before the atomic FCFS flip.
+- **Evaluation helper:** `src/shared/services/kyc.service.ts` → `KycService.evaluateGate(userId, now)` returns `{allowed, reason, thresholdPaise, cumulativePaise, kycStatus}`. Service-level pure read; no I/O beyond Mongo. Threshold sourced from `AppConfig.kycThresholdAmount` at request time.
+- **Cumulative-FY definition:** sum of `PrizePoolWinner.finalAmount` over the current IST financial year (Apr 1 → Mar 31) where `payoutStatus ∈ {PENDING, RELEASED}`. WITHHELD and VOID excluded.
+- **Block response:** `KycRequiredError(451)` with `details: {thresholdPaise, cumulativePaise, kycStatus}`. Error class was forward-declared in Chunk 1 (`src/shared/errors/AppError.ts`); Chunk 4 lights up real callers.
+- **TDS computation:** pure function `computeTds194BA(finalAmountPaise)` in `src/shared/services/tds.ts` — flat 30% rounded to integer paise. No threshold, no slab; statutory rate.
+- **Transactional flip:** on successful claim with a linked `PrizePoolWinner` row (matched by `(userId, redeemCodeId)`), the Mongo transaction flips `payoutStatus: 'RELEASED'`, writes `tdsDeducted`, `releasedAt`, and `panAtPayout` (from `users.kyc.panLast4`). Claim response surfaces the deduction via `tds: {deductedPaise, appliedOn, winnerId}` OR `tds: null` when no linked winner row exists.
+- **No face-value modification** per §8j. Gift-code denomination is unchanged; TDS is absorbed by the company, recorded on the `PrizePoolWinner.tdsDeducted` field for accounting. Quarterly Challan 281 deposit + Form 16A remain ops-level, out of the service.
 
-1. On every winner-eligible redeem claim, look up the user's `users.kyc.status`.
-2. If cumulative prize value for the FY exceeds `AppConfig.kycThresholdAmount` and `kyc.status !== 'VERIFIED'`, block the claim with `KYC_REQUIRED` (451). User is directed to the PAN-submission flow from Phase 2.
-3. For eligible winners, compute TDS: `tdsDeducted = floor(0.3 × finalAmount)` per TDS 194BA. Write to `PrizePoolWinner.tdsDeducted`, `tdsChallanNo` (assigned by payout worker), `panAtPayout` (last-4 masked), `form16aIssuedAt`.
-4. Payout releases only after TDS row is written (status → `RELEASED`).
+**Manual KYC verification workflow (MVP):** until a dedicated `/admin/users/:id/kyc-verify` endpoint lands (deferred to Phase 9), ops flip `users.kyc.status` to `VERIFIED` via mongosh after collecting PAN out-of-band. Documented in `ADMIN_OPERATIONS.md` §5.
 
-Phase 6 Chunk 1 `assignWinners` already persists the winner row with `payoutStatus: 'PENDING'` and all KYC/TDS columns nullable — the schema is ready; the enforcement lives on the claim path. Forward-pointer comment in `custom-rooms.admin.service.ts` documents this.
+**Tests:** 11 new specs across `kyc.service.spec.ts`, `tds.spec.ts`, `date.spec.ts` (FY bounds), and `redeem-codes.service.spec.ts` (gate + TDS write + no-linkage path). Suite: 356 → 367 green.
+
+**Closed by:** Phase 8 Chunk 4 commit.
 
 ---
 

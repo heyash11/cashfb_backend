@@ -7,8 +7,10 @@ import {
 } from '../../../test/testing/mongo.js';
 import { InMemoryEncryptor } from '../../shared/encryption/in-memory.js';
 import { MODELS } from '../../shared/models/index.js';
+import { AppConfigModel } from '../../shared/models/AppConfig.model.js';
 import { PostModel, type PostDoc } from '../../shared/models/Post.model.js';
 import { PostCompletionModel } from '../../shared/models/PostCompletion.model.js';
+import { PrizePoolWinnerModel } from '../../shared/models/PrizePoolWinner.model.js';
 import { RedeemCodeModel } from '../../shared/models/RedeemCode.model.js';
 import { UserModel, type UserAttrs, type UserDoc } from '../../shared/models/User.model.js';
 import { AdminRedeemCodeService } from './redeem-codes.admin.service.js';
@@ -297,5 +299,106 @@ describe('RedeemCodeService.markClaimed', () => {
     await expect(svc.markClaimed(codeId, user._id)).rejects.toMatchObject({
       code: 'CODE_NOT_OWNED',
     });
+  });
+});
+
+describe('RedeemCodeService.claim — Phase 8 KYC + TDS gate', () => {
+  async function seedPendingWinner(
+    userId: Types.ObjectId,
+    redeemCodeId: Types.ObjectId,
+    finalAmount: number,
+    createdAt: Date,
+  ): Promise<Types.ObjectId> {
+    const doc = await PrizePoolWinnerModel.create({
+      dayKey: '2026-07-15',
+      userId,
+      redeemCodeId,
+      type: 'GIFT_CODE',
+      tier: 'PUBLIC',
+      baseAmount: finalAmount,
+      multiplier: 1,
+      finalAmount,
+      tdsDeducted: 0,
+      payoutStatus: 'PENDING',
+    });
+    await PrizePoolWinnerModel.updateOne({ _id: doc._id }, { $set: { createdAt } });
+    return doc._id;
+  }
+
+  it('blocks with KYC_REQUIRED when cumulative FY > threshold AND user is not VERIFIED', async () => {
+    const encryptor = new InMemoryEncryptor();
+    const admin = new AdminRedeemCodeService({ encryptor, hashSecret: HASH_SECRET });
+    // Pin the clock inside FY 2026-27 so our seeded winners fall in-range.
+    const now = new Date('2026-07-15T12:00:00Z');
+    const svc = new RedeemCodeService({ encryptor, clock: () => now });
+
+    await AppConfigModel.create({ key: 'default', kycThresholdAmount: 1_000_000 });
+
+    const post = await mkPost();
+    const { codeId } = await seedPublishedCode(admin, svc, post, 'KYC-BLOCK-1');
+    const user = await mkUser();
+    await mkCompletion(user._id, post._id);
+    // Pre-existing PENDING winnings that push cumulative FY above threshold.
+    await seedPendingWinner(user._id, new Types.ObjectId(), 1_500_000, now);
+
+    await expect(svc.claim(codeId, user._id)).rejects.toMatchObject({
+      code: 'KYC_REQUIRED',
+      httpStatus: 451,
+    });
+
+    // The code must NOT have been flipped — failed pre-check runs
+    // before the atomic op.
+    const unchanged = await RedeemCodeModel.findById(codeId);
+    expect(unchanged?.status).toBe('PUBLISHED');
+  });
+
+  it('allows claim + computes TDS + flips linked PrizePoolWinner to RELEASED when user is VERIFIED over threshold', async () => {
+    const encryptor = new InMemoryEncryptor();
+    const admin = new AdminRedeemCodeService({ encryptor, hashSecret: HASH_SECRET });
+    const now = new Date('2026-07-15T12:00:00Z');
+    const svc = new RedeemCodeService({ encryptor, clock: () => now });
+
+    await AppConfigModel.create({ key: 'default', kycThresholdAmount: 1_000_000 });
+
+    const post = await mkPost();
+    const { codeId, plaintext } = await seedPublishedCode(admin, svc, post, 'KYC-OK-1');
+    const user = await mkUser({
+      kyc: { status: 'VERIFIED', panLast4: '4321', verifiedAt: now },
+    });
+    await mkCompletion(user._id, post._id);
+    // 5,000 paise prize linked to this specific redeem code, plus
+    // a separate big PENDING row that pushes cumulative above threshold.
+    const winnerId = await seedPendingWinner(user._id, codeId, 5_000, now);
+    await seedPendingWinner(user._id, new Types.ObjectId(), 1_200_000, now);
+
+    const result = await svc.claim(codeId, user._id);
+    expect(result.plaintextCode).toBe(plaintext);
+    expect(result.tds).not.toBeNull();
+    expect(result.tds?.deductedPaise).toBe(1500); // 30% of 5,000
+    expect(String(result.tds?.winnerId)).toBe(String(winnerId));
+
+    const flipped = await PrizePoolWinnerModel.findById(winnerId);
+    expect(flipped?.payoutStatus).toBe('RELEASED');
+    expect(flipped?.tdsDeducted).toBe(1500);
+    expect(flipped?.releasedAt).toBeDefined();
+    expect(flipped?.panAtPayout).toBe('XXXXX4321');
+  });
+
+  it('returns tds: null when no linked PrizePoolWinner row exists (code claimed outside pool flow)', async () => {
+    const encryptor = new InMemoryEncryptor();
+    const admin = new AdminRedeemCodeService({ encryptor, hashSecret: HASH_SECRET });
+    const svc = new RedeemCodeService({ encryptor });
+
+    // No AppConfig seeded → threshold defaults (1,000,000 paise),
+    // user has no prior winnings, so the gate allows and proceeds.
+    const post = await mkPost();
+    const { codeId } = await seedPublishedCode(admin, svc, post, 'NO-WINNER-LINK');
+    const user = await mkUser();
+    await mkCompletion(user._id, post._id);
+
+    const result = await svc.claim(codeId, user._id);
+    expect(result.tds).toBeNull();
+    // No PrizePoolWinner rows exist for this user.
+    expect(await PrizePoolWinnerModel.countDocuments({ userId: user._id })).toBe(0);
   });
 });
