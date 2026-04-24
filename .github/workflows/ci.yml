@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-typecheck-test:
+    name: Lint + Typecheck + Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit + in-memory integration tests
+        run: pnpm test
+
+  integration:
+    name: Integration Tests (real Mongo + Redis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Boot the same docker-compose stack the test:integration
+      # script expects: mongo (replset rs0 on :27018) + redis
+      # (:6380). Waits for both healthchecks to go green.
+      - name: Start Mongo replset + Redis
+        run: pnpm test:integration:up
+
+      - name: Run integration suite
+        run: pnpm test:integration
+
+      - name: Tear down
+        if: always()
+        run: pnpm test:integration:down

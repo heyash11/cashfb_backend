@@ -8,6 +8,14 @@ export default defineConfig({
     globals: false,
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
     /**
+     * Phase 9 Chunk 1 flow specs live under test/integration/flows/**
+     * and require the docker compose stack (Mongo replset on :27018,
+     * Redis on :6380). They run via `pnpm test:integration` against
+     * vitest.config.integration.ts and must be excluded here so
+     * `pnpm test` stays green without docker.
+     */
+    exclude: ['**/node_modules/**', '**/dist/**', 'test/integration/flows/**'],
+    /**
      * 10 seconds, doubled from Vitest's 5-second default. Two
      * integration specs (users.coins 150-row pagination and the
      * audit-export 1000-row heap-delta check) intermittently exceed

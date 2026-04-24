@@ -306,6 +306,43 @@ Two failure modes that could produce orphaned FAILED rows:
 
 ---
 
+## 19. DLQ integration spec — upgrade to real BullMQ Worker lifecycle
+
+**Status:** :red_circle: Open (low priority). Tracked for Phase 9 Chunk 5 or Phase 10.
+**Blocks:** Nothing. Current spec exercises the DLQ queue write against real Redis, but the Worker lifecycle + `failed` event emission is still mocked via a fake Worker object.
+**Risk of current state:** A BullMQ version-drift bug in the Worker → `failed` event contract (event name change, argument shape change, listener registration semantics) would not be caught by the current integration spec. The unit spec for `routeFailedToDlq` already covers the listener logic in isolation; the integration spec's job is to catch wiring regressions.
+
+**Upgrade plan:**
+
+1. Enqueue a job with `attempts: 1` into a real BullMQ queue (e.g. a throwaway `test-fail-queue`).
+2. Boot a real `Worker` whose processor unconditionally throws.
+3. Register `routeFailedToDlq(worker)` on that worker.
+4. Wait for the `failed` event to fire (either via promise or `worker.waitUntilReady` + polling the DLQ with a timeout).
+5. Assert the DLQ queue has 1 job with the expected shape.
+6. `await worker.close()` in afterEach.
+
+**Action needed:** No immediate work. File this ticket against Phase 9 Chunk 5 or Phase 10 observability pass.
+
+---
+
+## 20. User-side HTTP surface not mounted in app.ts
+
+**Status:** :red_circle: Open (observation only — tracked, not fixed). Discovered during Phase 9 Chunk 1 integration-test coverage on 2026-04-24.
+
+**Finding:** `src/app.ts` mounts only the admin surface (`/api/v1/admin/*`) and the public webhooks router (`/api/v1/webhooks/razorpay`). Every user-facing route — auth (`/auth/signup/request-otp`, `/auth/signup/verify`, `/auth/login/*`, `/auth/refresh`, `/auth/logout*`), coins (`/me/coins`), votes (`/votes`), posts (`/posts`) — has a built controller + router factory (`createAuthRouter`, `createVotesRouter`, `createUsersRouter`) but is not wired into the Express app.
+
+Consequence the integration suite ran into: the force-logout denylist spec had to exercise the user-side at the service layer (`AuthService.refresh` + `forceLogoutStore.assertNotForceLoggedOut`) because no authed HTTP endpoint exists to hit the `requireUser` middleware end-to-end.
+
+**Likely cause:** Phase 2-3 shipped services and routers in isolation; the `app.use(...)` wiring step for user-side routers was never completed. Admin surface (Phase 8) was wired as it was built.
+
+**Risk of current state:** Flutter app cannot call any user-side endpoint today. This blocks real client integration testing. The services themselves are well-covered by unit specs — the gap is purely HTTP wiring.
+
+**Recommended fix (NOT Phase 9 Chunk 2 scope):** One dedicated chunk that mounts every user-side router with its dependency-injected service, then extends the integration suite to hit a representative authed endpoint (e.g. `GET /api/v1/me/coins`) through the full middleware chain. The force-logout spec should be upgraded as part of that pass to also assert 401 on the actual HTTP surface, not only via the service layer.
+
+**Action needed:** Tracked. Do not fix during Chunk 2. Revisit after Phase 9 observability + hardening is complete.
+
+---
+
 ## Template for closing an item
 
 When a decision closes, replace its block with:
