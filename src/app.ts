@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { buildBullBoard } from './config/bullboard.js';
 import { env } from './config/env.js';
@@ -173,6 +174,17 @@ export function createApp(): Express {
       return;
     }
     if (err instanceof AppError) {
+      // 5xx AppError subclasses are genuine server faults — surface
+      // to Sentry. 4xx AppError instances are client faults and are
+      // filtered by instrument.ts's beforeSend anyway; we still hand
+      // them to captureException because the Sentry-side filter keeps
+      // the rule in one place instead of duplicating httpStatus logic.
+      if (err.httpStatus >= 500) {
+        Sentry.captureException(err, {
+          tags: { code: err.code, httpStatus: String(err.httpStatus) },
+          extra: { method: req.method, path: req.path, reqId: req.id },
+        });
+      }
       res.status(err.httpStatus).json({
         success: false,
         error: {
@@ -187,7 +199,7 @@ export function createApp(): Express {
       // Controllers call `schema.parse(req.body)` throughout the
       // admin surface. Surface these as 400 VALIDATION_FAILED with
       // the Zod issue list in details rather than hitting the 500
-      // fallback.
+      // fallback. Not Sentry-worthy — client fault.
       res.status(400).json({
         success: false,
         error: {
@@ -198,6 +210,10 @@ export function createApp(): Express {
       });
       return;
     }
+    // Non-AppError unknowns — genuine crashes. Always surface to Sentry.
+    Sentry.captureException(err, {
+      extra: { method: req.method, path: req.path, reqId: req.id },
+    });
     const e = err as { message?: string; stack?: string };
     logger.error(
       {

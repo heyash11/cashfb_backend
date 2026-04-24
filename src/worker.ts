@@ -1,5 +1,6 @@
+import * as Sentry from '@sentry/node';
 import mongoose from 'mongoose';
-import type { Job } from 'bullmq';
+import type { Job, Worker } from 'bullmq';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { getQueue, makeWorker } from './config/queues.js';
@@ -15,6 +16,7 @@ import {
   WEBHOOK_RETRY_SETTINGS,
   createWebhookRetryHandler,
 } from './workers/webhook-retry.worker.js';
+import { installProcessHandlers } from './shared/process-handlers.js';
 import { installShutdownHandlers, registerWorker } from './workers/shutdown.js';
 import { createTierSweepHandler, type TierSweepJobData } from './workers/tier-sweep.worker.js';
 import { createTopDonorHandler, type TopDonorJobData } from './workers/top-donor.worker.js';
@@ -41,7 +43,32 @@ function scheduledForFromJob(job: Job<{ scheduledFor?: string }>): string {
   return job.data.scheduledFor ?? new Date(job.timestamp).toISOString();
 }
 
+/**
+ * Phase 9 Chunk 2: mirror `routeFailedToDlq` with a Sentry capture
+ * for every terminally-exhausted job. DLQ is the durable inspection
+ * surface; Sentry is the paging / alerting surface. Non-terminal
+ * failures (retry budget remaining) are ignored by both — they're
+ * part of normal backoff-and-retry flow, not paging-worthy.
+ */
+function captureExhaustedToSentry(worker: Worker): void {
+  worker.on('failed', (job, err) => {
+    if (!job) return;
+    const maxAttempts = job.opts.attempts ?? 1;
+    if (job.attemptsMade < maxAttempts) return;
+    Sentry.captureException(err, {
+      tags: { queue: worker.name },
+      extra: {
+        jobId: job.id,
+        jobName: job.name,
+        attemptsMade: job.attemptsMade,
+        data: job.data,
+      },
+    });
+  });
+}
+
 async function main(): Promise<void> {
+  installProcessHandlers();
   logger.info({ env: env.NODE_ENV }, '[worker] boot');
 
   await mongoose.connect(env.MONGO_URI);
@@ -112,6 +139,7 @@ async function main(): Promise<void> {
   });
   registerWorker(cronWorker);
   routeFailedToDlq(cronWorker);
+  captureExhaustedToSentry(cronWorker);
 
   // Event-driven workers (Chunk 2).
   const invoiceHandler = createInvoiceHandler();
@@ -120,6 +148,7 @@ async function main(): Promise<void> {
   );
   registerWorker(invoiceWorker);
   routeFailedToDlq(invoiceWorker);
+  captureExhaustedToSentry(invoiceWorker);
 
   const webhookRetryHandler = createWebhookRetryHandler();
   const webhookRetryWorker = makeWorker<WebhookRetryJobPayload, unknown>(
@@ -133,6 +162,7 @@ async function main(): Promise<void> {
   );
   registerWorker(webhookRetryWorker);
   routeFailedToDlq(webhookRetryWorker);
+  captureExhaustedToSentry(webhookRetryWorker);
 
   installShutdownHandlers();
   logger.info('[worker] ready');

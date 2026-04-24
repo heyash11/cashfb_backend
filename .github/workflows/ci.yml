@@ -32,6 +32,12 @@ jobs:
       - name: Unit + in-memory integration tests
         run: pnpm test
 
+      # Phase 9 Chunk 2: smoke-build the Docker image so the
+      # GIT_SHA → SENTRY_RELEASE injection is verified in CI before
+      # Phase 10 wires up an actual image push. No registry push yet.
+      - name: Docker build (Sentry release injection check)
+        run: docker build --build-arg GIT_SHA=${{ github.sha }} -t cashfb-backend:ci .
+
   integration:
     name: Integration Tests (real Mongo + Redis)
     runs-on: ubuntu-latest

@@ -343,6 +343,24 @@ Consequence the integration suite ran into: the force-logout denylist spec had t
 
 ---
 
+## 21. Healthcheck liveness / readiness split for Phase 10 staging deploy
+
+**Status:** :red_circle: Open (deferred to Phase 10). Raised during Phase 9 Chunk 2 scope discussion on 2026-04-24.
+
+**Current state:** `src/app.ts` exposes a single `GET /health` endpoint that returns `{status: 'ok', ts, uptime, env}` with no downstream dependency check. That single endpoint conflates two concerns: "is the process alive?" (liveness) and "is the process ready to serve traffic?" (readiness).
+
+**Why defer:** The split only matters once we have a container orchestrator that routes traffic based on the distinction — i.e. the ALB + ECS Fargate target-group health check (liveness) vs the task-level readiness probe (readiness). That plumbing lands in Phase 10 deploy. Doing the split now against a dev-only boot produces a no-op distinction.
+
+**Planned shape for Phase 10:**
+
+- `GET /health` — existing; process-alive ping. Used by ALB target-group health check. Always 200 if the Express event loop is responsive.
+- `GET /ready` — new; returns 503 while startup tasks (mongoose connect, redis ping, jwt keys loaded) are pending, 200 once the process is wired and ready to serve. Downstream liveness (Mongo `ping`, Redis `PING`) MAY be included but adds cost per-poll — evaluate against ALB polling frequency before deciding.
+- `src/shared/readiness.ts` — `setReady()` called from `server.ts` after `mongoose.connect` + `initJwtKeys` + redis `subscribe` complete. `/ready` reads this flag.
+
+**Action needed:** Revisit during Phase 10 deploy chunk. No work in Phase 9.
+
+---
+
 ## Template for closing an item
 
 When a decision closes, replace its block with:

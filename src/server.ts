@@ -3,8 +3,10 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { ephemeralStats, initJwtKeys, isEphemeralMode } from './shared/jwt/signer.js';
+import { installProcessHandlers } from './shared/process-handlers.js';
 
 async function main(): Promise<void> {
+  installProcessHandlers();
   await initJwtKeys();
 
   await mongoose.connect(env.MONGO_URI);

@@ -60,6 +60,13 @@ const EnvSchema = z
     BULL_DASHBOARD_PATH: z.string().min(1).default('/admin/queues'),
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
     BULL_DLQ_NAME: z.string().min(1).default('dlq'),
+
+    // Sentry. All optional — absent DSN short-circuits Sentry.init to
+    // a no-op so local / CI boots stay unaffected. SENTRY_RELEASE is
+    // injected at image build time via the Dockerfile GIT_SHA ARG.
+    SENTRY_DSN: z.string().url().optional(),
+    SENTRY_ENVIRONMENT: z.string().min(1).optional(),
+    SENTRY_RELEASE: z.string().min(1).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;
