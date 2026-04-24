@@ -1,10 +1,16 @@
 import mongoose, { type FilterQuery, type Types } from 'mongoose';
-import { InternalError, NotFoundError, ValidationError } from '../../shared/errors/AppError.js';
+import {
+  ConflictError,
+  InternalError,
+  NotFoundError,
+  ValidationError,
+} from '../../shared/errors/AppError.js';
 import { CoinTransactionModel } from '../../shared/models/CoinTransaction.model.js';
 import { UserModel, type UserAttrs } from '../../shared/models/User.model.js';
 import { CoinTransactionRepository } from '../../shared/repositories/CoinTransaction.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
 import { ForceLogoutStore } from '../../shared/services/force-logout.js';
+import { ERASURE_CONFLICT } from '../users/users.erasure.service.js';
 
 export interface AdminUsersListFilter {
   search?: string;
@@ -201,6 +207,84 @@ export class AdminUsersService {
     if (!user) throw new NotFoundError('User not found');
     const cutoff = await this.forceLogoutStore.forceLogout(String(userId));
     return { cutoff };
+  }
+
+  /**
+   * DPDP erasure hold (Phase 9 Chunk 4). Pauses the 30-day
+   * anonymization clock for a user who has requested erasure.
+   * Typical use: legal/compliance review in flight. On hold clear,
+   * `deletedAt` is advanced forward so the user does not lose
+   * remaining grace.
+   */
+  async applyErasureHold(
+    userId: Types.ObjectId,
+    reason: string,
+    actorId: Types.ObjectId,
+  ): Promise<{ heldAt: Date; reason: string }> {
+    const user = await this.userRepo.findById(userId);
+    if (!user) throw new NotFoundError('User not found');
+    if (!user.deletedAt) {
+      throw new ConflictError(ERASURE_CONFLICT.NO_PENDING_ERASURE, 'User has no pending erasure');
+    }
+    if (user.anonymizedAt) {
+      throw new ConflictError('ALREADY_ANONYMIZED', 'User is already anonymized');
+    }
+    if (user.erasureHold?.active === true) {
+      throw new ConflictError(ERASURE_CONFLICT.ALREADY_HELD, 'Erasure already held');
+    }
+
+    const heldAt = new Date();
+    await this.userRepo.findOneAndUpdate(
+      { _id: userId },
+      {
+        $set: {
+          erasureHold: {
+            active: true,
+            reason,
+            by: actorId,
+            at: heldAt,
+          },
+        },
+      },
+    );
+    return { heldAt, reason };
+  }
+
+  /**
+   * Clear an active erasure hold. Advances `deletedAt` forward by
+   * the held duration so the remaining grace is preserved — i.e. a
+   * user who had 15 days remaining when the hold was applied still
+   * has 15 days remaining when it is cleared, regardless of how
+   * long the hold lasted.
+   */
+  async clearErasureHold(
+    userId: Types.ObjectId,
+    _actorId: Types.ObjectId,
+  ): Promise<{ clearedAt: Date; deletedAtAdvancedTo: Date }> {
+    const user = await this.userRepo.findById(userId);
+    if (!user) throw new NotFoundError('User not found');
+    if (!user.erasureHold?.active || !user.erasureHold.at) {
+      throw new ConflictError(ERASURE_CONFLICT.NOT_HELD, 'No active erasure hold on this user');
+    }
+    if (!user.deletedAt) {
+      throw new ConflictError(
+        ERASURE_CONFLICT.NO_PENDING_ERASURE,
+        'User has no pending erasure — invariant violation',
+      );
+    }
+
+    const clearedAt = new Date();
+    const heldDurationMs = clearedAt.getTime() - user.erasureHold.at.getTime();
+    const advancedDeletedAt = new Date(user.deletedAt.getTime() + heldDurationMs);
+
+    await this.userRepo.findOneAndUpdate(
+      { _id: userId },
+      {
+        $set: { deletedAt: advancedDeletedAt },
+        $unset: { erasureHold: '' },
+      },
+    );
+    return { clearedAt, deletedAtAdvancedTo: advancedDeletedAt };
   }
 }
 

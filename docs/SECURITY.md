@@ -304,8 +304,8 @@ Indian users whose cumulative financial-year prize winnings exceed `AppConfig.ky
 ### DPDP Act 2023
 
 - Consent artefact captured at signup: Zod schema includes `consentVersion`, `consentAcceptedAt`, `privacyPolicyVersion`.
-- Data export endpoint: `GET /me/export` returns JSON dump of user's data.
-- Erasure endpoint: `DELETE /me` soft-deletes with 30-day grace before anonymisation.
+- Data export endpoint: `GET /me/export` returns JSON dump of user's data. _(Deferred past Chunk 4 — tracked for future.)_
+- **Erasure endpoint + state machine + daily anonymization sweep: see [docs/DPDP.md](DPDP.md).** Endpoints live at `/me/account/erasure` (POST request, DELETE cancel, GET status) and `/admin/users/:id/erasure-hold` (SUPER_ADMIN pause/resume). 30-day grace; anonymization sweep runs 02:10 IST.
 - Breach-notification runbook: 72 h to Data Protection Board of India, 6 h to CERT-In.
 - Data minimisation: do not store what we do not need. PAN is lazy-captured at first payout, not at signup.
 

@@ -20,6 +20,10 @@ import { installProcessHandlers } from './shared/process-handlers.js';
 import { installShutdownHandlers, registerWorker } from './workers/shutdown.js';
 import { createTierSweepHandler, type TierSweepJobData } from './workers/tier-sweep.worker.js';
 import { createTopDonorHandler, type TopDonorJobData } from './workers/top-donor.worker.js';
+import {
+  createUserAnonymizeSweepHandler,
+  type UserAnonymizeSweepJobData,
+} from './workers/user-anonymize-sweep.worker.js';
 import type { InvoiceJobPayload, WebhookRetryJobPayload } from './shared/jobs/enqueue.js';
 
 /**
@@ -85,6 +89,7 @@ async function main(): Promise<void> {
     JOB_NAMES.RECONCILE_CODES_HOURLY,
     JOB_NAMES.TOP_DONOR_REFRESH,
     JOB_NAMES.TIER_EXPIRY_SWEEP,
+    JOB_NAMES.USER_ANONYMIZE_SWEEP,
   ] as const) {
     const spec = CRON_SCHEDULES[jobName];
     if (!spec) continue;
@@ -100,6 +105,7 @@ async function main(): Promise<void> {
   const prizePool = createPrizePoolHandler();
   const reconcile = createReconcileCodesHandler();
   const topDonor = createTopDonorHandler();
+  const userAnonymizeSweep = createUserAnonymizeSweepHandler();
   const tierSweep = createTierSweepHandler({
     enqueueContinuation: async (data) => {
       await cronQueue.add(JOB_NAMES.TIER_EXPIRY_SWEEP, data, {
@@ -132,6 +138,11 @@ async function main(): Promise<void> {
         return topDonor({ ...(job.data as TopDonorJobData), scheduledFor });
       case JOB_NAMES.TIER_EXPIRY_SWEEP:
         return tierSweep({ ...(job.data as TierSweepJobData), scheduledFor });
+      case JOB_NAMES.USER_ANONYMIZE_SWEEP:
+        return userAnonymizeSweep({
+          ...(job.data as UserAnonymizeSweepJobData),
+          scheduledFor,
+        });
       default:
         logger.warn({ name }, '[worker] unknown cron job, ignoring');
         return undefined;

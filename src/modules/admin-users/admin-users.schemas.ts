@@ -44,6 +44,14 @@ export const AdminUserForceLogoutBodySchema = z
   })
   .strict();
 
+export const AdminUserErasureHoldBodySchema = z
+  .object({
+    reason: z.string().min(10).max(500),
+  })
+  .strict();
+
+export const AdminUserErasureHoldClearBodySchema = z.object({}).strict();
+
 export type AdminUsersListQuery = z.infer<typeof AdminUsersListQuerySchema>;
 export type AdminUserBlockBody = z.infer<typeof AdminUserBlockBodySchema>;
 export type AdminUserUnblockBody = z.infer<typeof AdminUserUnblockBodySchema>;

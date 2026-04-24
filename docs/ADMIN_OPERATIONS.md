@@ -112,6 +112,22 @@ Typical failure: `VALIDATION_FAILED` when CSV rows don't match the denomination 
 
 **Force-logout.** `POST /users/:id/force-logout` — writes the Redis cutoff that invalidates every access + refresh token issued before the cutoff. Per-user, not per-JTI. TTL 30 days matching the refresh-token max lifetime.
 
+**DPDP erasure hold / resume.** `POST /users/:id/erasure-hold` pauses a user's pending erasure (e.g. active dispute, legal review). `DELETE /users/:id/erasure-hold` resumes — `deletedAt` is advanced forward by the held duration so the user does not lose remaining grace. Both SUPER_ADMIN only. Full state machine + cascade spec: [docs/DPDP.md](DPDP.md).
+
+```bash
+# Apply a hold
+curl -X POST "$BASE/api/v1/admin/users/$USER_ID/erasure-hold" \
+  -b cookies.txt -H "X-CSRF-Token: $CSRF" -H "Content-Type: application/json" \
+  -d '{"reason":"Active dispute — case #CFB-2026-042"}'
+
+# Clear a hold (clock resumes from pause position)
+curl -X DELETE "$BASE/api/v1/admin/users/$USER_ID/erasure-hold" \
+  -b cookies.txt -H "X-CSRF-Token: $CSRF" -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Audit trail: `audit_logs` rows with `action: 'USER_ERASURE_HOLD'` and `action: 'USER_ERASURE_HOLD_CLEAR'`.
+
 ---
 
 ## §5 Compliance workflows (KYC + TDS)

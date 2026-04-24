@@ -334,6 +334,13 @@ export class AuthService {
       // Surface as UNAUTHORIZED to keep the error generic.
       throw new UnauthorizedError('Invalid credentials');
     }
+    if (user.anonymizedAt) {
+      // Defensive: the sweep worker hashes the phone at anonymize
+      // time so findByPhone(rawPhone) should miss. This branch covers
+      // the race where anonymization lands between OTP send and OTP
+      // verify. Surface the same generic error as the not-found path.
+      throw new UnauthorizedError('Invalid credentials');
+    }
     if (user.blocked?.isBlocked) {
       throw new ForbiddenError('USER_BLOCKED', 'Account is blocked');
     }
@@ -446,6 +453,15 @@ export class AuthService {
     // Case A: normal rotation. Fetch user for current tier + block state.
     const user = await this.userRepo.findById(claims.sub);
     if (!user) throw new UnauthorizedError('User not found');
+    if (user.anonymizedAt) {
+      // DPDP terminal state. Force-logout denylist (set at erasure
+      // request) has the same 30-day TTL as the refresh token, so
+      // this branch covers the narrow race where the token-TTL and
+      // denylist-TTL both expire before the sweep runs. Revoke the
+      // family defensively so any lingering sibling sessions die too.
+      await this.sessionRepo.revokeFamily(claims.family);
+      throw new UnauthorizedError('Session forcibly terminated');
+    }
     if (user.blocked?.isBlocked) {
       throw new ForbiddenError('USER_BLOCKED', 'Account is blocked');
     }

@@ -74,6 +74,17 @@ export class ForceLogoutStore {
       throw new UnauthorizedError('Session forcibly terminated');
     }
   }
+
+  /**
+   * Delete the denylist key. Used by the DPDP erasure-cancel path
+   * (Phase 9 Chunk 4): when a user cancels erasure during grace, we
+   * don't want to force them to wait 30 days for the TTL to expire
+   * before they can log back in. Fresh OTP login issues new tokens
+   * that are not affected by any prior cutoff.
+   */
+  async clear(userId: string): Promise<void> {
+    await this.redis.del(key(userId));
+  }
 }
 
 /** Default singleton — used by the middleware + auth service. */

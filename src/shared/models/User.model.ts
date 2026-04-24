@@ -19,6 +19,20 @@ export interface UserBlocked {
   by?: Types.ObjectId;
 }
 
+/**
+ * DPDP erasure hold (Phase 9 Chunk 4). When `active: true`, the
+ * anonymization sweep worker skips this user — used by ops to pause
+ * a pending erasure while a legal / compliance review is in flight.
+ * On clear, the sweep consumer advances `deletedAt` forward by the
+ * held duration so the user does not lose their remaining grace.
+ */
+export interface UserErasureHold {
+  active: boolean;
+  reason?: string;
+  by?: Types.ObjectId;
+  at?: Date;
+}
+
 export interface UserAttrs {
   _id: Types.ObjectId;
   createdAt: Date;
@@ -63,6 +77,20 @@ export interface UserAttrs {
   consentVersion?: string;
   consentAcceptedAt?: Date;
   privacyPolicyVersion?: string;
+
+  // DPDP erasure state (Phase 9 Chunk 4 — see docs/DPDP.md).
+  //
+  // `deletedAt` is set when the user requests erasure; the sweep
+  // worker tombstones the row 30 days after this timestamp (unless
+  // cancelled by the user or held by ops).
+  //
+  // `anonymizedAt` is the terminal state. Once set, PII fields
+  // (phone/email/displayName/avatarUrl/socialLinks/kyc.pan*) are
+  // tombstoned in-place. The row itself is kept for referential
+  // integrity against donations / coin_transactions / prize_pool_winners.
+  deletedAt?: Date;
+  anonymizedAt?: Date;
+  erasureHold?: UserErasureHold;
 }
 
 const UserSchema = new Schema(
@@ -134,6 +162,18 @@ const UserSchema = new Schema(
     consentVersion: String,
     consentAcceptedAt: Date,
     privacyPolicyVersion: String,
+
+    // DPDP erasure (Phase 9 Chunk 4 — see docs/DPDP.md). The actual
+    // index on `deletedAt` is a compound partial index declared below
+    // (non-anonymized rows only) so the sweep scan is O(candidates).
+    deletedAt: Date,
+    anonymizedAt: { type: Date, index: true },
+    erasureHold: {
+      active: { type: Boolean, default: false },
+      reason: String,
+      by: { type: Types.ObjectId, ref: 'AdminUser' },
+      at: Date,
+    },
   },
   baseSchemaOptions,
 );
@@ -142,6 +182,13 @@ UserSchema.index({ tier: 1, tierExpiresAt: 1 }); // tier + expiry sweep
 UserSchema.index({ declaredState: 1, geoBlocked: 1 }); // geo-block check
 UserSchema.index({ 'blocked.isBlocked': 1 }); // block enforcement
 UserSchema.index({ 'kyc.panLast4': 1 }); // admin PAN search
+// DPDP erasure sweep. The worker scans `deletedAt <= now - 30d`.
+// Sparse index so live users (`deletedAt` absent — the vast
+// majority) are not in the index at all. The sweep query filters
+// anonymized + held rows in-application. MongoDB partial indexes
+// do not support `$exists: false` as a filter, so we can't narrow
+// the index further at the storage layer.
+UserSchema.index({ deletedAt: 1 }, { sparse: true });
 
 export type UserDoc = HydratedDocument<UserAttrs>;
 export const UserModel: Model<UserAttrs> = model<UserAttrs>('User', UserSchema, 'users');

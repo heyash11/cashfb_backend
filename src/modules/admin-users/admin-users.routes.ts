@@ -50,5 +50,24 @@ export function createAdminUsersRouter(service: AdminUsersService): Router {
     auditLog({ action: 'USER_FORCE_LOGOUT', resourceKind: 'User' }, controller.forceLogout),
   );
 
+  // DPDP erasure hold / clear-hold. SUPER_ADMIN only — these can
+  // block or resume a user's path to anonymization, which is
+  // regulatory scope. See docs/DPDP.md §5.
+  router.post(
+    '/:id/erasure-hold',
+    ...baseChain,
+    superOnly,
+    auditLog({ action: 'USER_ERASURE_HOLD', resourceKind: 'User' }, controller.applyErasureHold),
+  );
+  router.delete(
+    '/:id/erasure-hold',
+    ...baseChain,
+    superOnly,
+    auditLog(
+      { action: 'USER_ERASURE_HOLD_CLEAR', resourceKind: 'User' },
+      controller.clearErasureHold,
+    ),
+  );
+
   return router;
 }

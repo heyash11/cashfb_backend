@@ -6,6 +6,8 @@ import type { AdminUsersService } from './admin-users.service.js';
 import {
   AdminUserBlockBodySchema,
   AdminUserCoinAdjustBodySchema,
+  AdminUserErasureHoldBodySchema,
+  AdminUserErasureHoldClearBodySchema,
   AdminUserForceLogoutBodySchema,
   AdminUserUnblockBodySchema,
   AdminUsersListQuerySchema,
@@ -87,6 +89,40 @@ export class AdminUsersController {
       after: {
         cutoff: result.cutoff,
         reason: body.reason,
+      },
+      resourceKind: 'User',
+      resourceId: userId,
+    };
+  };
+
+  applyErasureHold = async (req: Request): Promise<AuditCaptureContext> => {
+    const userId = parseObjectId(req.params.id, 'id');
+    const body = AdminUserErasureHoldBodySchema.parse(req.body);
+    const actorId = new Types.ObjectId(req.admin!.adminId);
+    const result = await this.service.applyErasureHold(userId, body.reason, actorId);
+    return {
+      before: null,
+      after: {
+        held: true,
+        heldAt: result.heldAt,
+        reason: result.reason,
+      },
+      resourceKind: 'User',
+      resourceId: userId,
+    };
+  };
+
+  clearErasureHold = async (req: Request): Promise<AuditCaptureContext> => {
+    const userId = parseObjectId(req.params.id, 'id');
+    AdminUserErasureHoldClearBodySchema.parse(req.body);
+    const actorId = new Types.ObjectId(req.admin!.adminId);
+    const result = await this.service.clearErasureHold(userId, actorId);
+    return {
+      before: null,
+      after: {
+        held: false,
+        clearedAt: result.clearedAt,
+        deletedAtAdvancedTo: result.deletedAtAdvancedTo,
       },
       resourceKind: 'User',
       resourceId: userId,

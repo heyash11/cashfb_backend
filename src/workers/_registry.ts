@@ -25,6 +25,7 @@ export const JOB_NAMES = {
   RECONCILE_CODES_HOURLY: 'reconcile-codes-hourly',
   TOP_DONOR_REFRESH: 'top-donor-refresh',
   TIER_EXPIRY_SWEEP: 'tier-expiry-sweep',
+  USER_ANONYMIZE_SWEEP: 'user-anonymize-sweep',
   INVOICE_GENERATE: 'invoice-generate',
   WEBHOOK_RETRY: 'webhook-retry',
 } as const;
@@ -47,4 +48,8 @@ export const CRON_SCHEDULES: Record<string, CronSpec> = {
   [JOB_NAMES.RECONCILE_CODES_HOURLY]: { pattern: '0 * * * *', tz: 'Asia/Kolkata' },
   [JOB_NAMES.TOP_DONOR_REFRESH]: { pattern: '*/5 * * * *', tz: 'Asia/Kolkata' },
   [JOB_NAMES.TIER_EXPIRY_SWEEP]: { pattern: '0 2 * * *', tz: 'Asia/Kolkata' },
+  // DPDP anonymize sweep runs at 02:10 IST — 10 minutes after the
+  // tier-expiry sweep so the two don't collide on Mongo transaction
+  // contention. Independent cron; different predicate; safe to stack.
+  [JOB_NAMES.USER_ANONYMIZE_SWEEP]: { pattern: '10 2 * * *', tz: 'Asia/Kolkata' },
 };

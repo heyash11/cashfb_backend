@@ -205,17 +205,20 @@ Place of supply is the user's declared state. Intra-state uses CGST + SGST split
 
 ## 13. DPDP erasure schema design
 
-**Status:** :red_circle: Open
-**Blocks:** DPDP compliance work (post-MVP phase; does NOT block Phase 1).
-**Recommended default:** Add `deletedAt: Date` and `anonymizedAt: Date` to `users`. 30-day grace via a daily `user-anonymize-sweep` cron. On anonymisation, overwrite phone/email/displayName/avatarUrl/socialLinks/PAN ciphertext with nulls or hashed tombstones; keep `_id` and `createdAt` for referential integrity.
+**Status:** :green_circle: Closed on 2026-04-24 (Phase 9 Chunk 4)
+**Resolution:** Added `deletedAt`, `anonymizedAt`, and `erasureHold` to the `users` model (no new fields on other collections). 30-day grace window with admin-pausable hold; daily sweep at 02:10 IST anonymizes expired rows in-place. Full design in [docs/DPDP.md](DPDP.md).
 
-The `DELETE /me` endpoint (SECURITY.md §10) and the DPDP Act erasure requirement need a durable schema story. Not plumbed in Phase 1 to avoid speculative fields. Three sub-questions the owner should close:
+**Sub-question resolutions:**
 
-1. Does the same `deletedAt`/`anonymizedAt` pair belong on `donations`? Donor name, displayName, and socialLinks are PII even after the user is gone.
-2. For `audit_logs`, `coin_transactions`, `prize_pool_winners` (which reference `userId`): erase the user's presence, or retain for integrity/regulatory purposes? Counsel should weigh in, especially for prize records (TDS 194BA retention).
-3. Is 30-day grace acceptable under DPDP, or does the owner prefer 7 days / immediate erasure with a confirmation step?
+1. _Does `deletedAt`/`anonymizedAt` belong on `donations`?_ **No.** Donor PII on `donations` (displayName, message, socialLinks, ipAddress, notes) is cleared by the sweep cascade — no new fields on donations. userId preserved so revenue aggregation stays accurate. Same treatment applies to `notifications` (title/body/payload cleared, userId preserved).
+2. _Retain `audit_logs` / `coin_transactions` / `prize_pool_winners`?_ **Retain.** Audit-log integrity is a compliance requirement; `coin_transactions` + `prize_pool_winners` fall under §194BA TDS 7-year retention. The panAtPayout on winner rows is already last-4-only so it's not a fresh PII surface. Admin panel renders anonymized actors as `REDACTED_USER` (client-side; row NOT mutated).
+3. _30-day grace acceptable?_ **Yes.** Implemented as 30 days, user can cancel during grace, admin can pause and resume.
 
-**Action needed:** Owner confirms the field set, grace window, and which collections receive erasure fields. Once closed, add the fields to the relevant models and wire the sweep cron in Phase 7 or a dedicated compliance phase.
+**Implementer:** Claude (Phase 9 Chunk 4 commit).
+
+### Original question
+
+Retained above this line for future reference.
 
 ---
 
