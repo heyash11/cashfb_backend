@@ -361,6 +361,39 @@ Consequence the integration suite ran into: the force-logout denylist spec had t
 
 ---
 
+## 22. `/metrics` route label shows `"/"` instead of `"/metrics"` for self-scrapes
+
+**Status:** :red_circle: Open (minor). Raised during Phase 9 Chunk 3 smoke-testing on 2026-04-24.
+
+**Symptom:** Every Prometheus scrape of `GET /metrics` registers in the `http_request_duration_seconds` / `http_requests_total` series under `route="/"` rather than `route="/metrics"`. Makes the self-observability signal ambiguous with any future handler mounted at the root.
+
+**Cause:** `/metrics` is mounted as `app.use('/metrics', createMetricsRouter())` where the router is `router.get('/', ...)`. Express populates `req.route.path` with the router-relative path (`"/"`), not the full mount path. The http metrics middleware reads `req.route?.path` directly, so it sees `"/"`.
+
+**Fix options:**
+
+1. Update [src/shared/metrics/http.ts](../src/shared/metrics/http.ts) to use `req.baseUrl + (req.route?.path ?? '')` — preserves the existing mount pattern, renders `/metrics` + `/`. Normalise trailing-slash if it's cosmetic (`"/metrics/"` vs `"/metrics"`).
+2. Mount `/metrics` as a direct handler — `app.get('/metrics', ipAllowlist(), handler)` — instead of a nested Router. Simpler but loses the Router's ability to host future `/metrics/*` sub-routes.
+
+**Priority:** Dashboard quirk, not a correctness issue. Track for Phase 9 Chunk 5 or Phase 10 cleanup pass. Do NOT block DPDP (Chunk 4) on this.
+
+---
+
+## 23. Local dev Node version mismatch (Node 20.19 vs engines-required 22)
+
+**Status:** :red_circle: Open. Raised during Phase 9 Chunk 3 smoke-testing on 2026-04-24.
+
+**Symptom:** On a dev host running Node 20.19, `pnpm dev` (which resolves to `tsx watch --env-file-if-exists=.env --import ./src/instrument.ts src/server.ts`) silently stalls — the tsx parent process spawns but never boots the child server, logs stay at the banner, `/health` is unreachable. Same behaviour for `node --import=tsx --import ./src/instrument.ts src/server.ts`.
+
+**Workaround proven during Chunk 3 smoke:** drop `--import ./src/instrument.ts` for local boot (`npx tsx src/server.ts`). Sentry is not wired in local dev anyway because `SENTRY_DSN` is absent — so skipping `instrument.ts` changes nothing observable locally. Metrics, error middleware, and process handlers all behave identically.
+
+**Cause:** Node 20's tsx loader preload ordering does not reliably hand off `--import <.ts-path>` to the loader.mjs hook. `package.json` engines field is `>=22.0.0 <23.0.0` — the configuration assumes Node 22, which is what the Docker image uses.
+
+**Fix:** `nvm install 22 && nvm alias default 22` on the dev host. Verify with `node --version` → `v22.x`. `pnpm dev` works end-to-end on Node 22.
+
+**Priority:** Local dev quality-of-life only. Does NOT affect production (Dockerfile base is `node:22-alpine` for the builder and `distroless/nodejs22-debian12` for runtime). Does NOT affect CI (`actions/setup-node` pins to 22 in [.github/workflows/ci.yml](../.github/workflows/ci.yml)).
+
+---
+
 ## Template for closing an item
 
 When a decision closes, replace its block with:
