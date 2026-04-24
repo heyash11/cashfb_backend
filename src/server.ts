@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { ephemeralStats, initJwtKeys, isEphemeralMode } from './shared/jwt/signer.js';
+import { startBullmqMetricsPoll } from './shared/metrics/bullmq.js';
 import { installProcessHandlers } from './shared/process-handlers.js';
 
 async function main(): Promise<void> {
@@ -16,6 +17,10 @@ async function main(): Promise<void> {
   const server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT, env: env.NODE_ENV }, 'cashfb api listening');
   });
+
+  // Start the BullMQ depth poll. `.unref()` inside so SIGTERM
+  // shutdown doesn't wait 15s for the next tick.
+  startBullmqMetricsPoll();
 
   function shutdown(signal: string): void {
     logger.info({ signal }, 'shutting down');

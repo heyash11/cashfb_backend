@@ -54,12 +54,20 @@ import { SubscriptionService } from './modules/subscriptions/subscriptions.servi
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
 import { ZodError } from 'zod';
+import { createMetricsRouter } from './modules/metrics/metrics.routes.js';
 import { AppError } from './shared/errors/AppError.js';
+import { metricsMiddleware } from './shared/metrics/http.js';
 
 export function createApp(): Express {
   const app = express();
 
   app.disable('x-powered-by');
+
+  // Metrics latency middleware mounted FIRST so every downstream
+  // route's `res.on('finish')` fires with the full elapsed time.
+  // /health and /metrics themselves are included — their latencies
+  // are useful signals for scraper lag.
+  app.use(metricsMiddleware());
 
   app.get('/health', (_req: Request, res: Response) => {
     res.json({
@@ -69,6 +77,11 @@ export function createApp(): Express {
       env: env.NODE_ENV,
     });
   });
+
+  // /metrics exposition — ipAllowlist-only gate. No adminSession,
+  // no CSRF (scrapers don't carry cookies). See
+  // docs/ADMIN_OPERATIONS.md §Observability.
+  app.use('/metrics', createMetricsRouter());
 
   // CRITICAL ORDER: the raw-body webhook MUST be mounted BEFORE any
   // `express.json()` middleware. Razorpay signs the unparsed request

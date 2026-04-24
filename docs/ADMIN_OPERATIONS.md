@@ -190,6 +190,44 @@ Ops may also store the envelope-encrypted full PAN (`panCt`, `panIv`, `panTag`, 
 
 **Audit trail.** Every admin write creates a row in `audit_logs` with `{actorId, actorEmail, action, resource: {kind, id}, before, after, ip, userAgent}`. Sensitive fields on `before`/`after` are redacted in BOTH the persisted row AND the HTTP response body. Reading is via `GET /audit-logs` (SUPER_ADMIN only).
 
+**Prometheus metrics.** `GET /metrics` on the api host exposes Prometheus exposition text (`Content-Type: text/plain; version=0.0.4`). Scrape cadence expectation: 15-30 s.
+
+Metrics surfaced (all co-exist with prom-client's default Node runtime metrics — CPU, event loop lag, GC, heap):
+
+| Metric                          | Type      | Labels                                               | Source                         |
+| ------------------------------- | --------- | ---------------------------------------------------- | ------------------------------ |
+| `http_request_duration_seconds` | histogram | `method, route, status_code`                         | per-request middleware         |
+| `http_requests_total`           | counter   | `method, route, status_code`                         | per-request middleware         |
+| `bullmq_queue_depth`            | gauge     | `queue, state` (waiting / active / delayed / failed) | api-process 15 s poll          |
+| `mongo_connection_ready`        | gauge     | —                                                    | mongoose.connection.readyState |
+| `mongo_connection_pool_size`    | gauge     | —                                                    | configured maxPoolSize         |
+| `redis_connection_state`        | gauge     | —                                                    | ioredis status                 |
+| `admin_session_count`           | gauge     | —                                                    | Redis SCAN of admin:session:\* |
+
+**Access control — critical.** `/metrics` is gated by `ipAllowlist()` ONLY (no admin session, no CSRF — Prometheus scrapers don't carry cookies). The allowlist source of truth is `AppConfig.adminIpAllowlist`. Same list that gates the admin UI.
+
+Operational consequence:
+
+- **Dev (empty allowlist):** permissive — local prom-client testing + `curl http://localhost:4000/metrics` both work without further config.
+- **Staging / Prod (empty allowlist):** permissive, but **you MUST populate the allowlist before deploying a Prometheus scraper or the metrics endpoint is open to the internet**. Conversely, if `adminIpAllowlist` is non-empty and the Prometheus scraper IP is NOT on the list, every scrape returns 403 `ADMIN_IP_NOT_ALLOWED` and dashboards go blank silently.
+
+Onboarding a new Prometheus scraper in staging/prod:
+
+1. Obtain the scraper's egress IP(s). For a Grafana Cloud hosted scraper: the published static IP list. For a self-hosted Prometheus on ECS: the NAT gateway EIP.
+2. Append them to `AppConfig.adminIpAllowlist` via the admin app-config surface (or `mongosh` as a break-glass).
+3. Verify reachability:
+
+```bash
+# From the scraper host (or simulating the scraper IP via X-Forwarded-For
+# if your ALB trusts the header — otherwise run from the actual host).
+curl -H "X-Forwarded-For: <scraper-ip>" https://api.cashfb.com/metrics | head -5
+# Expected: 200 with lines like
+#   # HELP http_request_duration_seconds HTTP request latency in seconds, ...
+#   # TYPE http_request_duration_seconds histogram
+```
+
+4. A 403 response means the IP isn't on the list. Check `audit_logs` for the `ADMIN_IP_NOT_ALLOWED` denial (it logs the rejected IP).
+
 ---
 
 ## §8 Smoke test commands (reference)
