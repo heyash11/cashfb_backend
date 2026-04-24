@@ -330,19 +330,18 @@ Two failure modes that could produce orphaned FAILED rows:
 
 ## 20. User-side HTTP surface not mounted in app.ts
 
-**Status:** :red_circle: Open (observation only — tracked, not fixed). Discovered during Phase 9 Chunk 1 integration-test coverage on 2026-04-24.
+**Status:** :green_circle: Closed on 2026-04-24 (Phase 9 Chunk 5 side-effect)
+**Resolution:** All user-side router factories (`createAuthRouter`, `createUsersRouter`, `createVotesRouter`, `createPostsRouter`, `createRedeemCodesRouter`, `createDonationsRouter`, `createSubscriptionsRouter`, `createCustomRoomsRouter`) mounted under `/api/v1/*` in `src/app.ts`. Middleware posture verified: every user route uses `requireUser` (JWT bearer) only — no admin middleware bleed (ipAllowlist / adminSession / csrfCheck / requireAnyRole stay scoped to `/api/v1/admin/*`).
 
-**Finding:** `src/app.ts` mounts only the admin surface (`/api/v1/admin/*`) and the public webhooks router (`/api/v1/webhooks/razorpay`). Every user-facing route — auth (`/auth/signup/request-otp`, `/auth/signup/verify`, `/auth/login/*`, `/auth/refresh`, `/auth/logout*`), coins (`/me/coins`), votes (`/votes`), posts (`/posts`) — has a built controller + router factory (`createAuthRouter`, `createVotesRouter`, `createUsersRouter`) but is not wired into the Express app.
+**Discovery context:** Phase 9 Chunk 5 k6 load scripts (`votes-burst`, `fcfs-race`) required authenticated user JWTs issued via the real HTTP surface. The unmounted state blocked those scripts. Rather than defer to a dedicated §20 chunk, scope expanded within Chunk 5 as a contiguous unit of work.
 
-Consequence the integration suite ran into: the force-logout denylist spec had to exercise the user-side at the service layer (`AuthService.refresh` + `forceLogoutStore.assertNotForceLoggedOut`) because no authed HTTP endpoint exists to hit the `requireUser` middleware end-to-end.
+**Test coverage added:** `test/integration/flows/user-http-auth.spec.ts` verifies (a) routes are mounted (not 404), (b) `requireUser` gate returns 401 UNAUTHORIZED on /me/coins, /votes, /posts without a bearer token, (c) admin middleware has NOT bled onto user routes (no 403 ADMIN_IP_NOT_ALLOWED / CSRF_INVALID), (d) admin surface remains gated (401/403 on `/admin/users` without admin-session).
 
-**Likely cause:** Phase 2-3 shipped services and routers in isolation; the `app.use(...)` wiring step for user-side routers was never completed. Admin surface (Phase 8) was wired as it was built.
+**Implementer:** Claude (Phase 9 Chunk 5 commit).
 
-**Risk of current state:** Flutter app cannot call any user-side endpoint today. This blocks real client integration testing. The services themselves are well-covered by unit specs — the gap is purely HTTP wiring.
+### Original question
 
-**Recommended fix (NOT Phase 9 Chunk 2 scope):** One dedicated chunk that mounts every user-side router with its dependency-injected service, then extends the integration suite to hit a representative authed endpoint (e.g. `GET /api/v1/me/coins`) through the full middleware chain. The force-logout spec should be upgraded as part of that pass to also assert 401 on the actual HTTP surface, not only via the service layer.
-
-**Action needed:** Tracked. Do not fix during Chunk 2. Revisit after Phase 9 observability + hardening is complete.
+Opened in Phase 9 Chunk 1: `src/app.ts` mounts only the admin surface (`/api/v1/admin/*`) and the public webhooks router. User-facing routes had controller + router factories but were not wired. Risk: Flutter app cannot call any user endpoint; client integration testing blocked.
 
 ---
 

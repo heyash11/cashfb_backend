@@ -1,8 +1,6 @@
 import mongoose, { type Types } from 'mongoose';
-import { env } from '../../config/env.js';
+import { getDefaultEncryptor } from '../../shared/encryption/default.js';
 import type { Encryptor } from '../../shared/encryption/envelope.js';
-import { InMemoryEncryptor } from '../../shared/encryption/in-memory.js';
-import { KmsEncryptor } from '../../shared/encryption/kms.js';
 import {
   ConflictError,
   ForbiddenError,
@@ -78,7 +76,7 @@ export class RedeemCodeService {
     this.redeemCodeRepo = deps.redeemCodeRepo ?? new RedeemCodeRepository();
     this.postCompletionRepo = deps.postCompletionRepo ?? new PostCompletionRepository();
     this.userRepo = deps.userRepo ?? new UserRepository();
-    this.encryptor = deps.encryptor ?? defaultEncryptor();
+    this.encryptor = deps.encryptor ?? getDefaultEncryptor();
     this.kycService = deps.kycService ?? new KycService();
     this.clock = deps.clock ?? (() => new Date());
   }
@@ -245,11 +243,4 @@ export class RedeemCodeService {
       status: c.status as ListForPostItem['status'],
     };
   }
-}
-
-function defaultEncryptor(): Encryptor {
-  if (env.KMS_KEY_ID && env.AWS_REGION) {
-    return new KmsEncryptor({ region: env.AWS_REGION, keyId: env.KMS_KEY_ID });
-  }
-  return new InMemoryEncryptor();
 }

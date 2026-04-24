@@ -1,5 +1,4 @@
 import type { Types } from 'mongoose';
-import { env } from '../../config/env.js';
 import {
   ConflictError,
   ForbiddenError,
@@ -7,9 +6,8 @@ import {
   NotFoundError,
   UnprocessableError,
 } from '../../shared/errors/AppError.js';
+import { getDefaultEncryptor } from '../../shared/encryption/default.js';
 import type { Encryptor } from '../../shared/encryption/envelope.js';
-import { InMemoryEncryptor } from '../../shared/encryption/in-memory.js';
-import { KmsEncryptor } from '../../shared/encryption/kms.js';
 import { CustomRoomModel } from '../../shared/models/CustomRoom.model.js';
 import type { CustomRoomAttrs } from '../../shared/models/CustomRoom.model.js';
 import type { CustomRoomResultAttrs } from '../../shared/models/CustomRoomResult.model.js';
@@ -84,7 +82,7 @@ export class CustomRoomsService {
     this.roomRepo = deps.roomRepo ?? new CustomRoomRepository();
     this.resultRepo = deps.resultRepo ?? new CustomRoomResultRepository();
     this.appConfigRepo = deps.appConfigRepo ?? new AppConfigRepository();
-    this.encryptor = deps.encryptor ?? defaultEncryptor();
+    this.encryptor = deps.encryptor ?? getDefaultEncryptor();
   }
 
   async listForDay(input: ListRoomsInput): Promise<ListRoomsItem[]> {
@@ -275,11 +273,4 @@ export class CustomRoomsService {
       throw new ForbiddenError('FEATURE_DISABLED', 'Tournaments feature is disabled');
     }
   }
-}
-
-function defaultEncryptor(): Encryptor {
-  if (env.KMS_KEY_ID && env.AWS_REGION) {
-    return new KmsEncryptor({ region: env.AWS_REGION, keyId: env.KMS_KEY_ID });
-  }
-  return new InMemoryEncryptor();
 }

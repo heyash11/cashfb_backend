@@ -42,21 +42,36 @@ import { createAdminRefundsRouter } from './modules/admin-refunds/index.js';
 import { AdminSponsorsService, createAdminSponsorsRouter } from './modules/admin-sponsors/index.js';
 import { createAdminSubscriptionsRouter } from './modules/admin-subscriptions/index.js';
 import { AdminUsersService, createAdminUsersRouter } from './modules/admin-users/index.js';
+import { AuthService, createAuthRouter } from './modules/auth/index.js';
+import { createOtpService } from './modules/auth/otp.factory.js';
+import { createCustomRoomsRouter } from './modules/custom-rooms/index.js';
 import { AdminCustomRoomsService } from './modules/custom-rooms/custom-rooms.admin.service.js';
+import { CustomRoomsService } from './modules/custom-rooms/custom-rooms.service.js';
+import { createDonationsRouter } from './modules/donations/index.js';
 import { AdminDonationService } from './modules/donations/donations.admin.service.js';
 import { DonationService } from './modules/donations/donations.service.js';
+import { createPostsRouter } from './modules/posts/index.js';
+import { PostService } from './modules/posts/posts.service.js';
 import { AdminPostService } from './modules/posts/posts.admin.service.js';
 import { PrizePoolService } from './modules/prize-pools/prize-pools.service.js';
+import { createRedeemCodesRouter } from './modules/redeem-codes/index.js';
+import { RedeemCodeService } from './modules/redeem-codes/redeem-codes.service.js';
 import { AdminRedeemCodeService } from './modules/redeem-codes/redeem-codes.admin.service.js';
 import { RefundService } from './modules/refunds/refunds.service.js';
+import { createSubscriptionsRouter } from './modules/subscriptions/index.js';
 import { AdminSubscriptionService } from './modules/subscriptions/subscriptions.admin.service.js';
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
+import { UserCoinsService, createUsersRouter } from './modules/users/index.js';
+import { createVotesRouter } from './modules/votes/index.js';
+import { VoteService } from './modules/votes/votes.service.js';
+import { NoopCoinEventEmitter } from './shared/events/coinEvents.js';
 import { createWebhooksRouter } from './modules/webhooks/webhooks.routes.js';
 import { WebhookService } from './modules/webhooks/webhooks.service.js';
 import { ZodError } from 'zod';
 import { createMetricsRouter } from './modules/metrics/metrics.routes.js';
 import { AppError } from './shared/errors/AppError.js';
 import { metricsMiddleware } from './shared/metrics/http.js';
+import { requestContext } from './shared/middleware/requestContext.js';
 
 export function createApp(): Express {
   const app = express();
@@ -102,6 +117,40 @@ export function createApp(): Express {
   app.use('/api/v1', createWebhooksRouter(webhookService));
 
   app.use(express.json({ limit: '1mb' }));
+
+  // requestContext — attaches req.id + extracts ipAddress / userAgent
+  // for auth controllers. Mounted once here so every downstream
+  // router (user-side + admin) can rely on req.ctx. Must run after
+  // express.json so the error handler's reqId field is populated.
+  app.use(requestContext);
+
+  // ---- User-side surface (Phase 9 Chunk 5 — closes OPEN_DECISIONS §20).
+  // These router factories have existed since Phases 2-6 but were never
+  // mounted in app.ts. Wired here so the Flutter client and k6 load
+  // tests can exercise the real HTTP surface end-to-end.
+  //
+  // Middleware posture: each router uses `requireUser` (JWT bearer
+  // auth) per-route. None of the user-side routes carry admin
+  // middleware (ipAllowlist / adminSession / csrfCheck / requireAnyRole).
+  // Verified in the Chunk 5 smoke checklist.
+  const otpService = createOtpService();
+  const authService = new AuthService({ otpService });
+  // Coin events — NoopCoinEventEmitter in Phase 9. Phase 10+ will
+  // wire a Socket.IO emitter when real-time coin updates ship.
+  const coinEvents = new NoopCoinEventEmitter();
+  const userCoinsService = new UserCoinsService();
+  const voteService = new VoteService({ coinEvents });
+  const postService = new PostService({ coinEvents });
+  const redeemCodeService = new RedeemCodeService();
+  const customRoomsService = new CustomRoomsService();
+  app.use('/api/v1/auth', createAuthRouter(authService));
+  app.use('/api/v1', createUsersRouter(userCoinsService));
+  app.use('/api/v1', createVotesRouter(voteService));
+  app.use('/api/v1', createPostsRouter(postService));
+  app.use('/api/v1', createRedeemCodesRouter(redeemCodeService));
+  app.use('/api/v1', createDonationsRouter(donationService));
+  app.use('/api/v1', createSubscriptionsRouter(subscriptionService));
+  app.use('/api/v1', createCustomRoomsRouter(customRoomsService));
 
   // Admin auth surface. Middleware chain order (enforced per-route):
   //   rate-limit → ipAllowlist → adminSession → csrfCheck → requireRole → auditLog → handler

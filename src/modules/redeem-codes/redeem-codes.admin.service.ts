@@ -3,9 +3,8 @@ import { type Readable } from 'node:stream';
 import { stringify as csvStringify } from 'csv-stringify';
 import { env } from '../../config/env.js';
 import { ValidationError } from '../../shared/errors/AppError.js';
+import { getDefaultEncryptor } from '../../shared/encryption/default.js';
 import type { Encryptor } from '../../shared/encryption/envelope.js';
-import { InMemoryEncryptor } from '../../shared/encryption/in-memory.js';
-import { KmsEncryptor } from '../../shared/encryption/kms.js';
 import type { RedeemCodeAttrs } from '../../shared/models/RedeemCode.model.js';
 import { RedeemCodeModel } from '../../shared/models/RedeemCode.model.js';
 import type { RedeemCodeBatchAttrs } from '../../shared/models/RedeemCodeBatch.model.js';
@@ -93,7 +92,7 @@ export class AdminRedeemCodeService {
     this.redeemCodeRepo = deps.redeemCodeRepo ?? new RedeemCodeRepository();
     this.redeemCodeBatchRepo = deps.redeemCodeBatchRepo ?? new RedeemCodeBatchRepository();
     this.postRepo = deps.postRepo ?? new PostRepository();
-    this.encryptor = deps.encryptor ?? defaultEncryptor();
+    this.encryptor = deps.encryptor ?? getDefaultEncryptor();
     this.hashSecret = deps.hashSecret ?? defaultHashSecret();
   }
 
@@ -315,13 +314,6 @@ export class AdminRedeemCodeService {
   async getForAudit(codeId: Types.ObjectId | string): Promise<RedeemCodeAttrs | null> {
     return this.redeemCodeRepo.findById(codeId);
   }
-}
-
-function defaultEncryptor(): Encryptor {
-  if (env.KMS_KEY_ID && env.AWS_REGION) {
-    return new KmsEncryptor({ region: env.AWS_REGION, keyId: env.KMS_KEY_ID });
-  }
-  return new InMemoryEncryptor();
 }
 
 function defaultHashSecret(): string {

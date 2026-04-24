@@ -14,6 +14,14 @@ export interface RateLimitSpec {
   keyKind: KeyKind;
   /** Optional override; receives the Request, returns the key to count. */
   keyFn?: (req: Request) => string;
+  /**
+   * Optional short-circuit — returning `true` skips rate-limit
+   * accounting for that request. Used by load-test paths (Phase 9
+   * Chunk 5) so 100-user signup bursts don't trip the 10/IP/15min
+   * OTP verify limiter. The predicate itself is responsible for
+   * triple-gating (dev-mode + phone pattern + flag).
+   */
+  skip?: (req: Request) => boolean;
 }
 
 function extractPhone(req: Request): string | undefined {
@@ -79,6 +87,7 @@ export function makeRateLimiter(spec: RateLimitSpec): RequestHandler {
       prefix: `rl:${spec.name}:`,
     }),
     keyGenerator,
+    ...(spec.skip ? { skip: spec.skip } : {}),
     handler: (_req, _res, next) => {
       next(new RateLimitedError('Too many requests'));
     },

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import mongoose, { type ClientSession, type Types } from 'mongoose';
+import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import {
   ConflictError,
@@ -70,6 +71,36 @@ const SUSPICIOUS_SCORE_BUMP = 10;
 function maskPhone(phone: string): string {
   if (phone.length <= 7) return '****';
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
+}
+
+/**
+ * Phase 9 Chunk 5 — load-test OTP bypass predicate. Triply-gated:
+ *   - NODE_ENV strictly 'development'
+ *   - phone matches the reserved load-test prefix
+ *     (/^\+919999990\d{3}$/ → `+919999990000` to `+919999990999`)
+ *   - caller opted in with `_devBypassOtp === true`
+ *
+ * Any one failing returns false → caller runs the normal OTP verify.
+ * Exported for unit tests; not part of the service class so the
+ * behaviour is a pure function of its inputs (env included).
+ *
+ * Prefix rationale: the spec used `+919999LOAD0001` as the shape,
+ * but IndianPhoneSchema strips non-digits before matching — letters
+ * in the phone would silently reshape to a real-looking number. A
+ * pure-digit reserved prefix preserves the spirit (clearly distinct
+ * from real Indian mobiles, fixed range for all 100 test users) and
+ * survives the schema transformer unchanged.
+ *
+ * Security posture: exists specifically so load tests (load/) can
+ * sign up 100 synthetic users without hitting the OTP path. The
+ * NODE_ENV gate ensures production refuses every attempt regardless
+ * of phone pattern.
+ */
+const LOAD_TEST_PHONE_PATTERN = /^\+919999990\d{3}$/;
+export function shouldBypassSignupOtp(input: { phone: string; _devBypassOtp?: true }): boolean {
+  if (env.NODE_ENV !== 'development') return false;
+  if (!LOAD_TEST_PHONE_PATTERN.test(input.phone)) return false;
+  return input._devBypassOtp === true;
 }
 
 export class AuthService {
@@ -143,6 +174,14 @@ export class AuthService {
     deviceFingerprint: string;
     ipAddress: string;
     userAgent: string;
+    /**
+     * Phase 9 Chunk 5 — load-test OTP bypass. Triply-gated inside
+     * the service: `env.NODE_ENV === 'development'` AND phone
+     * matches `^\+919999LOAD` AND this flag is `true`. Any one
+     * failing = standard OTP verify. Unit-spec'd in
+     * `auth.service.bypass.spec.ts`.
+     */
+    _devBypassOtp?: true;
   }): Promise<{ user: AuthedUserDto; tokens: AuthTokens }> {
     // 18+ gate (IST).
     if (ageInYearsIst(input.dob) < 18) {
@@ -150,11 +189,20 @@ export class AuthService {
     }
     await this.enforceDeviceNotBlocked(input.deviceFingerprint);
 
-    await this.otpService.verify({
-      phone: input.phone,
-      otp: input.otp,
-      purpose: 'SIGNUP',
-    });
+    if (shouldBypassSignupOtp(input)) {
+      // Skip otpService.verify. All other invariants (18+, device
+      // block, transaction, referral, signup bonus) still apply.
+      logger.warn(
+        { phoneMasked: maskPhone(input.phone) },
+        '[auth] dev-mode OTP bypass used for signup (load-test phone pattern)',
+      );
+    } else {
+      await this.otpService.verify({
+        phone: input.phone,
+        otp: input.otp,
+        purpose: 'SIGNUP',
+      });
+    }
 
     // Resolve referrer, track-only (ambiguity #5). Unknown code is silent.
     let referredBy: Types.ObjectId | undefined;

@@ -25,6 +25,8 @@
     "test:integration": "MONGO_URI='mongodb://localhost:27018/cashfb_integration?directConnection=true' REDIS_URL='redis://localhost:6380/15' vitest run --config vitest.config.integration.ts",
     "test:integration:up": "docker compose -f docker-compose.dev.yml up -d --wait",
     "test:integration:down": "docker compose -f docker-compose.dev.yml down",
+    "load:cleanup": "MONGO_URI='mongodb://localhost:27018/cashfb_integration?directConnection=true' REDIS_URL='redis://localhost:6380/15' tsx scripts/load-cleanup.ts",
+    "load:seed-fcfs": "MONGO_URI='mongodb://localhost:27018/cashfb_integration?directConnection=true' REDIS_URL='redis://localhost:6380/15' tsx scripts/load-seed-fcfs.ts",
     "seed": "tsx scripts/seed.ts",
     "admin:create": "tsx scripts/admin-create.ts",
     "migrate:plans": "tsx scripts/migrate-razorpay-plans.ts",

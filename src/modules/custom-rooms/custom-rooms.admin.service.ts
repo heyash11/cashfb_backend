@@ -1,9 +1,7 @@
 import type { FilterQuery, Types } from 'mongoose';
-import { env } from '../../config/env.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../shared/errors/AppError.js';
+import { getDefaultEncryptor } from '../../shared/encryption/default.js';
 import type { Encryptor } from '../../shared/encryption/envelope.js';
-import { InMemoryEncryptor } from '../../shared/encryption/in-memory.js';
-import { KmsEncryptor } from '../../shared/encryption/kms.js';
 import { CustomRoomModel } from '../../shared/models/CustomRoom.model.js';
 import type { CustomRoomAttrs } from '../../shared/models/CustomRoom.model.js';
 import type { CustomRoomResultAttrs } from '../../shared/models/CustomRoomResult.model.js';
@@ -108,7 +106,7 @@ export class AdminCustomRoomsService {
     this.resultRepo = deps.resultRepo ?? new CustomRoomResultRepository();
     this.winnerRepo = deps.winnerRepo ?? new PrizePoolWinnerRepository();
     this.appConfigRepo = deps.appConfigRepo ?? new AppConfigRepository();
-    this.encryptor = deps.encryptor ?? defaultEncryptor();
+    this.encryptor = deps.encryptor ?? getDefaultEncryptor();
     this.clock = deps.clock ?? (() => new Date());
   }
 
@@ -303,11 +301,4 @@ export class AdminCustomRoomsService {
   async getForAudit(roomId: Types.ObjectId | string): Promise<CustomRoomAttrs | null> {
     return this.roomRepo.findById(roomId);
   }
-}
-
-function defaultEncryptor(): Encryptor {
-  if (env.KMS_KEY_ID && env.AWS_REGION) {
-    return new KmsEncryptor({ region: env.AWS_REGION, keyId: env.KMS_KEY_ID });
-  }
-  return new InMemoryEncryptor();
 }

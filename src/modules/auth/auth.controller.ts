@@ -48,6 +48,7 @@ export class AuthController {
       deviceFingerprint: body.deviceFingerprint,
       ipAddress: ctx.ipAddress,
       userAgent: ctx.userAgent,
+      ...(body._devBypassOtp === true ? { _devBypassOtp: true as const } : {}),
     });
     res.json({ success: true, data });
   };

@@ -10,3 +10,8 @@ coverage
 .idea
 .husky/_
 .claude/settings.local.json
+
+# Phase 9 Chunk 5 — k6 load test JSON summaries. Only the .gitkeep
+# is tracked so the directory exists in fresh clones. Run summaries
+# are large + churn every execution; keep them out of history.
+load/reports/*.json

@@ -244,6 +244,19 @@ curl -H "X-Forwarded-For: <scraper-ip>" https://api.cashfb.com/metrics | head -5
 
 4. A 403 response means the IP isn't on the list. Check `audit_logs` for the `ADMIN_IP_NOT_ALLOWED` denial (it logs the rejected IP).
 
+**Load tests (k6).** Four scripts under `load/` exercise the hot paths (votes burst, FCFS race, dashboard cache latency, webhook ingest). Thresholds in each script fail the run on breach. Runbook, install, env vars, auth model, and the scenario table live in [load/README.md](../load/README.md).
+
+When to run:
+
+- Before every staging deploy — all four scripts against staging, baseline drift alert if p95 regresses > 20 %.
+- Ad-hoc against local dev when touching auth / votes / redeem-codes / dashboard / webhook hot paths.
+
+Auth model: authenticated scenarios use a dev-only OTP bypass gated on `NODE_ENV === 'development'` + phone prefix `+919999990XXX` + `_devBypassOtp: true` request flag. Production refuses the bypass regardless of phone pattern. Dashboard-cache uses a pre-seeded admin (`pnpm admin:create`).
+
+State isolation: load tests run against `cashfb_integration` DB + Redis db 15, same boundary as the integration test suite. `pnpm load:cleanup` drops between runs.
+
+Reports: JSON summaries land in `load/reports/` when invoked with `--summary-export`. Update the Observed Baselines table in `load/README.md` after each significant change.
+
 ---
 
 ## §8 Smoke test commands (reference)

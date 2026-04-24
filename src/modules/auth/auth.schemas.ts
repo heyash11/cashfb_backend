@@ -54,6 +54,8 @@ export const RequestSignupOtpBodySchema = z
     phone: IndianPhoneSchema,
     deviceId: DeviceIdSchema,
     deviceFingerprint: DeviceFingerprintSchema,
+    /** Phase 9 Chunk 5 — same triple-gated load-test skip as /signup/verify. */
+    _devBypassOtp: z.boolean().optional(),
   })
   .strict();
 
@@ -74,6 +76,16 @@ export const VerifySignupOtpBodySchema = z
     privacyPolicyVersion: z.string().trim().min(1),
     deviceId: DeviceIdSchema,
     deviceFingerprint: DeviceFingerprintSchema,
+    /**
+     * Phase 9 Chunk 5 — load-test OTP bypass. Triply-gated:
+     *   - env.NODE_ENV === 'development' (strict equality)
+     *   - phone matches /^\+919999LOAD/
+     *   - _devBypassOtp === true
+     * Any one of the three failing falls back to standard OTP
+     * verification. The field is allowed on the schema in all
+     * environments but the service rejects it in non-dev.
+     */
+    _devBypassOtp: z.boolean().optional(),
   })
   .strict();
 
