@@ -396,6 +396,30 @@ Opened in Phase 9 Chunk 1: `src/app.ts` mounts only the admin surface (`/api/v1/
 
 ---
 
+## 24. Encryptor singleton pattern + test coverage
+
+**Status:** :red_circle: Open (tracker — partial fix shipped). Raised during Phase 9 Chunk 5 load-test smoke on 2026-04-24.
+
+**Finding:** A class of bugs where sibling admin + user services each instantiated separate `InMemoryEncryptor()` instances via their own `defaultEncryptor()` function. Same process, two different ephemeral KEKs → data encrypted by the admin path could not be decrypted by the user path. Caught during the fcfs-race k6 smoke — the 1 winning claim out of 100 contended for a redeem-code returned a 500 instead of a 200 because `RedeemCodeService.claim` couldn't decrypt the ciphertext that `AdminRedeemCodeService.uploadBatch` had just written.
+
+**Fix shipped in Chunk 5:**
+
+- New `src/shared/encryption/default.ts` → `getDefaultEncryptor()` returns a module-level singleton (keeps `KmsEncryptor` in prod, `InMemoryEncryptor` in dev). Production KMS was unaffected (stateless client, shared by key id), but the singleton is cleaner regardless.
+- `RedeemCodeService` + `AdminRedeemCodeService` migrated (fcfs-race regression).
+- `CustomRoomsService` + `AdminCustomRoomsService` migrated preemptively — same bug pattern, different ciphertext surface (BGMI room credentials). No load test exercises this path today, but leaving half of a uniform bug class would invite regression.
+
+**Still open (tracked here):**
+
+1. **Integration test coverage** — add a spec under `test/integration/flows/` that deliberately exercises a write-via-admin → read-via-user encryption roundtrip for BOTH redeem-codes and custom-rooms. Purpose: make any future reintroduction of per-service encryptor instantiation fail in CI. The existing fcfs-race k6 smoke happens to catch redeem-codes, but k6 runs aren't in CI — only the Vitest integration suite is (`.github/workflows/ci.yml` §integration).
+2. **Lint / CI grep guard** — block direct `new InMemoryEncryptor()` / `new KmsEncryptor()` calls outside `src/shared/encryption/default.ts` and test files. Options: ESLint `no-restricted-syntax` rule, or a CI grep step in `ci.yml`.
+3. **PAN encryption audit** — `users.kyc.pan[Ct|Iv|Tag|DekEnc]` ciphertext is stored by admin-KYC flows and read by user-facing paths. The admin panel handler instantiation chain should be audited to confirm it resolves through `getDefaultEncryptor()` end-to-end. If there's a separate admin-kyc service that instantiates its own encryptor, it has the same bug class as redeem-codes/custom-rooms had.
+
+**Priority:** Medium. The in-production path (KMS) is safe — this is about preventing regression in dev and catching dev-only bugs before they reach prod contention patterns. Phase 10 or later.
+
+**Implementer (partial fix):** Claude (Phase 9 Chunk 5 commit 01e7981).
+
+---
+
 ## Template for closing an item
 
 When a decision closes, replace its block with:
