@@ -62,6 +62,7 @@ import { createSubscriptionsRouter } from './modules/subscriptions/index.js';
 import { AdminSubscriptionService } from './modules/subscriptions/subscriptions.admin.service.js';
 import { SubscriptionService } from './modules/subscriptions/subscriptions.service.js';
 import { UserCoinsService, createUsersRouter } from './modules/users/index.js';
+import { UserProfileService } from './modules/users/users.profile.service.js';
 import { createVotesRouter } from './modules/votes/index.js';
 import { VoteService } from './modules/votes/votes.service.js';
 import { NoopCoinEventEmitter } from './shared/events/coinEvents.js';
@@ -139,12 +140,13 @@ export function createApp(): Express {
   // wire a Socket.IO emitter when real-time coin updates ship.
   const coinEvents = new NoopCoinEventEmitter();
   const userCoinsService = new UserCoinsService();
+  const userProfileService = new UserProfileService();
   const voteService = new VoteService({ coinEvents });
   const postService = new PostService({ coinEvents });
   const redeemCodeService = new RedeemCodeService();
   const customRoomsService = new CustomRoomsService();
   app.use('/api/v1/auth', createAuthRouter(authService));
-  app.use('/api/v1', createUsersRouter(userCoinsService));
+  app.use('/api/v1', createUsersRouter(userCoinsService, userProfileService));
   app.use('/api/v1', createVotesRouter(voteService));
   app.use('/api/v1', createPostsRouter(postService));
   app.use('/api/v1', createRedeemCodesRouter(redeemCodeService));
