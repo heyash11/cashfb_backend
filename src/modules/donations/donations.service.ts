@@ -190,12 +190,33 @@ export class DonationService {
   async refreshTopDonorRanking(input: { limit?: number } = {}): Promise<{ rankingCount: number }> {
     const limit = Math.max(1, Math.min(1000, input.limit ?? 50));
 
+    // Aggregation contract:
+    //   $match  — CAPTURED only, userId !== null (logged-in donors),
+    //             isAnonymous !== true (donor explicitly chose to
+    //             hide). Pre-aggregate filter — anonymous donations
+    //             are excluded from the donor's total, not just
+    //             hidden-by-name. A donor with only anonymous
+    //             donations does not appear on the leaderboard.
+    //   $group  — sum + count per donor
+    //   $sort   — leaderboard order
+    //   $limit  — top-N cap
+    //   $lookup donations → most recent CAPTURED non-anonymous donation
+    //             per donor, project displayName + socialLinks. The
+    //             {userId, status, createdAt} index serves this directly.
+    //             createdAt over capturedAt: index alignment, with
+    //             rare delayed-capture orders the gap is seconds.
+    //   $lookup users     → profile-level avatarUrl per donor.
+    //   $project          — flatten the lookup arrays onto a row shape
+    //             matching TopDonorRankingAttrs.
     const aggregated = await DonationModel.aggregate<{
       _id: Types.ObjectId;
       totalDonated: number;
       donationCount: number;
+      displayName?: string;
+      avatarUrl?: string;
+      socialLinks?: { youtube?: string; facebook?: string; instagram?: string };
     }>([
-      { $match: { status: 'CAPTURED', userId: { $ne: null } } },
+      { $match: { status: 'CAPTURED', userId: { $ne: null }, isAnonymous: { $ne: true } } },
       {
         $group: {
           _id: '$userId',
@@ -205,6 +226,48 @@ export class DonationService {
       },
       { $sort: { totalDonated: -1 } },
       { $limit: limit },
+      {
+        $lookup: {
+          from: 'donations',
+          let: { donorId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$userId', '$$donorId'] },
+                    { $eq: ['$status', 'CAPTURED'] },
+                    { $ne: ['$isAnonymous', true] },
+                  ],
+                },
+              },
+            },
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $limit: 1 },
+            { $project: { _id: 0, displayName: 1, socialLinks: 1 } },
+          ],
+          as: 'latestDonation',
+        },
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          pipeline: [{ $project: { _id: 0, avatarUrl: 1 } }],
+          as: 'donor',
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          totalDonated: 1,
+          donationCount: 1,
+          displayName: { $arrayElemAt: ['$latestDonation.displayName', 0] },
+          socialLinks: { $arrayElemAt: ['$latestDonation.socialLinks', 0] },
+          avatarUrl: { $arrayElemAt: ['$donor.avatarUrl', 0] },
+        },
+      },
     ]).exec();
 
     await TopDonorRankingModel.deleteMany({});
@@ -217,6 +280,14 @@ export class DonationService {
       totalDonated: row.totalDonated,
       donationCount: row.donationCount,
       computedAt: now,
+      // Conditional spreads: undefined / empty-string leaves are
+      // omitted entirely so the document doesn't pollute reads with
+      // null leaves. Falsy-omit per §A3 (whitespace-only displayName
+      // is rejected at donation-creation intake, so a falsy here
+      // means the donor never set one).
+      ...(row.displayName ? { displayName: row.displayName } : {}),
+      ...(row.avatarUrl ? { avatarUrl: row.avatarUrl } : {}),
+      ...(row.socialLinks ? { socialLinks: row.socialLinks } : {}),
     }));
     await TopDonorRankingModel.insertMany(docs);
     return { rankingCount: aggregated.length };

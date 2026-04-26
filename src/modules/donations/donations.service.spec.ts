@@ -10,6 +10,7 @@ import {
 import { DonationModel } from '../../shared/models/Donation.model.js';
 import { MODELS } from '../../shared/models/index.js';
 import { TopDonorRankingModel } from '../../shared/models/TopDonorRanking.model.js';
+import { UserModel } from '../../shared/models/User.model.js';
 import { DonationService } from './donations.service.js';
 
 type AnyModel = { syncIndexes(): Promise<string[]> };
@@ -200,22 +201,83 @@ describe('DonationService.getTopDonor / listTopDonors', () => {
 });
 
 describe('DonationService.refreshTopDonorRanking', () => {
-  it('aggregates CAPTURED donations per user, sorts by total desc, overwrites top_donor_rankings', async () => {
+  it('aggregates CAPTURED donations + enriches each row with displayName, avatarUrl, socialLinks', async () => {
     const svc = mkSvc();
     const alice = new Types.ObjectId();
     const bob = new Types.ObjectId();
     const carol = new Types.ObjectId();
 
-    // Alice: 3 captured totaling 50000. Bob: 1 × 30000. Carol: 2 × 10000.
-    // One FAILED donation for Alice that must NOT count.
+    // Seed User rows so the avatarUrl lookup has something to find.
+    // Alice has avatar; Bob does not; Carol has no User row at all.
+    await UserModel.create([
+      {
+        _id: alice,
+        phone: '+919876500001',
+        dob: new Date('1990-01-01'),
+        declaredState: 'IN-MH',
+        avatarUrl: 'https://cdn.test/alice.png',
+      },
+      {
+        _id: bob,
+        phone: '+919876500002',
+        dob: new Date('1990-01-01'),
+        declaredState: 'IN-MH',
+      },
+    ]);
+
+    // Alice: 3 captured totaling 50000 — latest donation has the
+    // displayName we expect on the ranking row. Bob: 1 × 30000.
+    // Carol: 2 × 10000. One FAILED donation for Alice must NOT
+    // count and must NOT contribute its displayName to the rank.
     await DonationModel.create([
-      { userId: alice, amount: 20000, razorpayOrderId: 'a1', status: 'CAPTURED' },
-      { userId: alice, amount: 20000, razorpayOrderId: 'a2', status: 'CAPTURED' },
-      { userId: alice, amount: 10000, razorpayOrderId: 'a3', status: 'CAPTURED' },
-      { userId: alice, amount: 99999, razorpayOrderId: 'a_failed', status: 'FAILED' },
-      { userId: bob, amount: 30000, razorpayOrderId: 'b1', status: 'CAPTURED' },
-      { userId: carol, amount: 5000, razorpayOrderId: 'c1', status: 'CAPTURED' },
-      { userId: carol, amount: 5000, razorpayOrderId: 'c2', status: 'CAPTURED' },
+      {
+        userId: alice,
+        amount: 20000,
+        razorpayOrderId: 'a1',
+        status: 'CAPTURED',
+        displayName: 'Alice (older)',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+      },
+      {
+        userId: alice,
+        amount: 20000,
+        razorpayOrderId: 'a2',
+        status: 'CAPTURED',
+        displayName: 'Alice (newer)',
+        socialLinks: { youtube: 'https://youtube.com/@alice' },
+        createdAt: new Date('2026-04-15T00:00:00Z'),
+      },
+      {
+        userId: alice,
+        amount: 10000,
+        razorpayOrderId: 'a3',
+        status: 'CAPTURED',
+        displayName: 'Alice (latest)',
+        socialLinks: { youtube: 'https://youtube.com/@alice', instagram: 'https://insta/alice' },
+        createdAt: new Date('2026-04-20T00:00:00Z'),
+      },
+      {
+        userId: alice,
+        amount: 99999,
+        razorpayOrderId: 'a_failed',
+        status: 'FAILED',
+        displayName: 'Alice (failed — must not show)',
+      },
+      { userId: bob, amount: 30000, razorpayOrderId: 'b1', status: 'CAPTURED', displayName: 'Bob' },
+      {
+        userId: carol,
+        amount: 5000,
+        razorpayOrderId: 'c1',
+        status: 'CAPTURED',
+        displayName: 'Carol',
+      },
+      {
+        userId: carol,
+        amount: 5000,
+        razorpayOrderId: 'c2',
+        status: 'CAPTURED',
+        displayName: 'Carol',
+      },
     ]);
 
     // Stale ranking row that must be overwritten.
@@ -231,19 +293,155 @@ describe('DonationService.refreshTopDonorRanking', () => {
     const rows = await TopDonorRankingModel.find({}).sort({ rank: 1 }).lean();
     expect(rows).toHaveLength(3);
 
+    // Alice: rank 1, total 50000, 3 donations. Latest displayName +
+    // socialLinks. avatarUrl from User row.
     expect(rows[0]?.rank).toBe(1);
     expect(String(rows[0]?.userId)).toBe(String(alice));
     expect(rows[0]?.totalDonated).toBe(50000);
     expect(rows[0]?.donationCount).toBe(3);
+    expect(rows[0]?.displayName).toBe('Alice (latest)');
+    expect(rows[0]?.avatarUrl).toBe('https://cdn.test/alice.png');
+    expect(rows[0]?.socialLinks?.youtube).toBe('https://youtube.com/@alice');
+    expect(rows[0]?.socialLinks?.instagram).toBe('https://insta/alice');
 
+    // Bob: rank 2, has User row but no avatarUrl set.
     expect(rows[1]?.rank).toBe(2);
     expect(String(rows[1]?.userId)).toBe(String(bob));
     expect(rows[1]?.totalDonated).toBe(30000);
+    expect(rows[1]?.displayName).toBe('Bob');
+    expect(rows[1]?.avatarUrl).toBeUndefined();
 
+    // Carol: rank 3, NO User row at all → avatarUrl undefined,
+    // displayName still set (from donation row).
     expect(rows[2]?.rank).toBe(3);
     expect(String(rows[2]?.userId)).toBe(String(carol));
     expect(rows[2]?.totalDonated).toBe(10000);
     expect(rows[2]?.donationCount).toBe(2);
+    expect(rows[2]?.displayName).toBe('Carol');
+    expect(rows[2]?.avatarUrl).toBeUndefined();
+  });
+
+  it('displayName comes from the most recent CAPTURED donation, not the oldest', async () => {
+    const svc = mkSvc();
+    const donor = new Types.ObjectId();
+    await DonationModel.create([
+      {
+        userId: donor,
+        amount: 1000,
+        razorpayOrderId: 'd_1',
+        status: 'CAPTURED',
+        displayName: 'First Name',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      },
+      {
+        userId: donor,
+        amount: 1000,
+        razorpayOrderId: 'd_2',
+        status: 'CAPTURED',
+        displayName: 'Second Name',
+        createdAt: new Date('2026-02-01T00:00:00Z'),
+      },
+      {
+        userId: donor,
+        amount: 1000,
+        razorpayOrderId: 'd_3',
+        status: 'CAPTURED',
+        displayName: 'Latest Name',
+        createdAt: new Date('2026-03-01T00:00:00Z'),
+      },
+    ]);
+
+    await svc.refreshTopDonorRanking();
+    const row = await TopDonorRankingModel.findOne({ userId: donor }).lean();
+    expect(row?.displayName).toBe('Latest Name');
+    expect(row?.donationCount).toBe(3);
+    expect(row?.totalDonated).toBe(3000);
+  });
+
+  it('donor with all anonymous CAPTURED donations does NOT appear on the leaderboard', async () => {
+    const svc = mkSvc();
+    const ghost = new Types.ObjectId();
+    const visible = new Types.ObjectId();
+    await DonationModel.create([
+      {
+        userId: ghost,
+        amount: 100000,
+        razorpayOrderId: 'ghost_1',
+        status: 'CAPTURED',
+        isAnonymous: true,
+      },
+      {
+        userId: ghost,
+        amount: 100000,
+        razorpayOrderId: 'ghost_2',
+        status: 'CAPTURED',
+        isAnonymous: true,
+      },
+      {
+        userId: visible,
+        amount: 1,
+        razorpayOrderId: 'v_1',
+        status: 'CAPTURED',
+        displayName: 'Visible Donor',
+      },
+    ]);
+
+    await svc.refreshTopDonorRanking();
+    const rows = await TopDonorRankingModel.find({}).lean();
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0]?.userId)).toBe(String(visible));
+    expect(rows.find((r) => String(r.userId) === String(ghost))).toBeUndefined();
+  });
+
+  it('donor with mixed anonymous + non-anonymous: total reflects only non-anonymous', async () => {
+    const svc = mkSvc();
+    const donor = new Types.ObjectId();
+    await DonationModel.create([
+      // 3 non-anonymous totaling 30000
+      {
+        userId: donor,
+        amount: 10000,
+        razorpayOrderId: 'mix_pub_1',
+        status: 'CAPTURED',
+        displayName: 'Public Name',
+      },
+      {
+        userId: donor,
+        amount: 10000,
+        razorpayOrderId: 'mix_pub_2',
+        status: 'CAPTURED',
+        displayName: 'Public Name',
+      },
+      {
+        userId: donor,
+        amount: 10000,
+        razorpayOrderId: 'mix_pub_3',
+        status: 'CAPTURED',
+        displayName: 'Public Name',
+      },
+      // 2 anonymous totaling 50000 — must be excluded from the total
+      {
+        userId: donor,
+        amount: 25000,
+        razorpayOrderId: 'mix_anon_1',
+        status: 'CAPTURED',
+        isAnonymous: true,
+      },
+      {
+        userId: donor,
+        amount: 25000,
+        razorpayOrderId: 'mix_anon_2',
+        status: 'CAPTURED',
+        isAnonymous: true,
+      },
+    ]);
+
+    await svc.refreshTopDonorRanking();
+    const row = await TopDonorRankingModel.findOne({ userId: donor }).lean();
+    expect(row).toBeTruthy();
+    expect(row?.totalDonated).toBe(30000); // not 80000
+    expect(row?.donationCount).toBe(3); // not 5
+    expect(row?.displayName).toBe('Public Name');
   });
 });
 
