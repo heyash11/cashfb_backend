@@ -39,7 +39,7 @@ describe('admin-posts routes', () => {
       title: 'Daily trivia',
       dayKey: '2026-04-23',
       scheduledAt: '2026-04-23T10:00:00.000Z',
-      tierRequired: 'PUBLIC',
+      tier: 'PUBLIC',
     };
 
     const res = await request(app)
@@ -84,7 +84,7 @@ describe('admin-posts routes', () => {
       title: 'Original',
       dayKey: '2026-04-23',
       scheduledAt: new Date('2026-04-23T10:00:00.000Z'),
-      tierRequired: 'PUBLIC',
+      tier: 'PUBLIC',
       createdBy: seed.adminId,
     });
 

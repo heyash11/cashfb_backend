@@ -196,6 +196,15 @@ export class AdminRedeemCodeService {
           $set: {
             status: 'PUBLISHED',
             postId: input.postId,
+            // Phase 11.4 §A6 — propagate the parent Post's tier
+            // onto the redeem code at publish time. Pre-fix, new
+            // publishes left RedeemCode.tier at the schema default
+            // 'PUBLIC' regardless of the parent post's actual tier;
+            // the Phase 11.0 backfill papered over this for existing
+            // rows but new publishes were silently incorrect. The
+            // tier-scoped FCFS scan from 11.0's compound index
+            // {tier,status,postId} now returns the right rows.
+            tier: post.tier,
             publishedAt: new Date(),
           },
         },

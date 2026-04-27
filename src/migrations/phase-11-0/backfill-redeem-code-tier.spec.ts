@@ -21,12 +21,12 @@ beforeEach(async () => {
   await clearAllCollections();
 });
 
-async function seedPost(tierRequired: 'PUBLIC' | 'PRO' | 'PRO_MAX'): Promise<Types.ObjectId> {
+async function seedPost(tier: 'PUBLIC' | 'PRO' | 'PRO_MAX'): Promise<Types.ObjectId> {
   const post = await PostModel.create({
-    title: `Post ${tierRequired}`,
+    title: `Post ${tier}`,
     dayKey: '2026-04-26',
     scheduledAt: new Date('2026-04-26T17:00:00Z'),
-    tierRequired,
+    tier,
     createdBy: new Types.ObjectId(),
   });
   return post._id;

@@ -37,7 +37,7 @@ describe('admin-custom-rooms routes', () => {
       game: 'BGMI',
       dayKey: '2026-04-23',
       scheduledAt: '2026-04-23T15:00:00.000Z',
-      tierRequired: 'PUBLIC',
+      tier: 'PUBLIC',
     };
 
     const res = await request(app)
@@ -86,7 +86,7 @@ describe('admin-custom-rooms routes', () => {
       dayKey: '2026-04-23',
       scheduledAt: new Date('2026-04-23T15:00:00.000Z'),
       status: 'SCHEDULED',
-      tierRequired: 'PUBLIC',
+      tier: 'PUBLIC',
       participantCount: 0,
       registeredParticipants: [],
       createdBy: new Types.ObjectId(seed.adminId),
@@ -118,7 +118,7 @@ describe('admin-custom-rooms routes', () => {
       dayKey: '2026-04-23',
       scheduledAt: new Date('2026-04-23T15:00:00.000Z'),
       status: 'COMPLETED',
-      tierRequired: 'PUBLIC',
+      tier: 'PUBLIC',
       participantCount: 0,
       registeredParticipants: [],
       createdBy: new Types.ObjectId(contentAdmin.adminId),

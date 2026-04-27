@@ -9,7 +9,7 @@ export interface AdminPostCreateInput {
   scheduledAt: Date;
   status?: PostAttrs['status'];
   coinReward?: number;
-  tierRequired?: PostAttrs['tierRequired'];
+  tier?: PostAttrs['tier'];
   adsConfig?: PostAdsConfig;
 }
 
@@ -20,7 +20,7 @@ export interface AdminPostUpdateInput {
   scheduledAt?: Date;
   status?: PostAttrs['status'];
   coinReward?: number;
-  tierRequired?: PostAttrs['tierRequired'];
+  tier?: PostAttrs['tier'];
   adsConfig?: PostAdsConfig;
   publishedAt?: Date;
   closedAt?: Date;
@@ -53,7 +53,7 @@ export class AdminPostService {
     if (input.description !== undefined) data.description = input.description;
     if (input.status !== undefined) data.status = input.status;
     if (input.coinReward !== undefined) data.coinReward = input.coinReward;
-    if (input.tierRequired !== undefined) data.tierRequired = input.tierRequired;
+    if (input.tier !== undefined) data.tier = input.tier;
     if (input.adsConfig !== undefined) data.adsConfig = input.adsConfig;
     const doc = await this.postRepo.create(data);
     return doc.toObject();

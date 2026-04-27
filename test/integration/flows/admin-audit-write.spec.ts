@@ -43,7 +43,7 @@ describe('[integration] admin audit write', () => {
         title: 'Integration post',
         dayKey: '2026-04-24',
         scheduledAt: '2026-04-24T10:00:00.000Z',
-        tierRequired: 'PUBLIC',
+        tier: 'PUBLIC',
       });
 
     expect(res.status).toBe(200);

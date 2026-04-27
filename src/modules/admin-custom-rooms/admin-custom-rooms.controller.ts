@@ -36,7 +36,7 @@ export class AdminCustomRoomsController {
     };
     if (body.visibleFromAt !== undefined) input.visibleFromAt = body.visibleFromAt;
     if (body.resultEnabledAt !== undefined) input.resultEnabledAt = body.resultEnabledAt;
-    if (body.tierRequired !== undefined) input.tierRequired = body.tierRequired;
+    if (body.tier !== undefined) input.tier = body.tier;
     if (body.pageNumber !== undefined) input.pageNumber = body.pageNumber;
     if (body.notice !== undefined) input.notice = body.notice;
     const after = await this.service.create(input, actorId);

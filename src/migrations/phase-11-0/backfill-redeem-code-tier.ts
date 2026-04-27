@@ -49,16 +49,19 @@ export async function runBackfillRedeemCodeTier(): Promise<RedeemCodeBackfillRep
   const realPostIds = postIds.filter((id): id is NonNullable<typeof id> => id != null);
 
   // Fetch parent Posts in one round-trip.
-  const posts = await PostModel.find(
-    { _id: { $in: realPostIds } },
-    { _id: 1, tierRequired: 1 },
-  ).lean();
+  // Phase 11.4 — Post.tierRequired was renamed to Post.tier. This
+  // Phase 11.0 backfill predates the rename; on prod the rename
+  // migration (scripts/backfill-phase-11-4.ts) MUST run before this
+  // one if a redeploy ever invokes both. On a fresh prod, this
+  // script is a no-op anyway because Phase 11.0 backfill only ran
+  // once on dev. Read `tier` (post-rename) for new prod runs.
+  const posts = await PostModel.find({ _id: { $in: realPostIds } }, { _id: 1, tier: 1 }).lean();
 
-  // Group postIds by their Post.tierRequired value.
+  // Group postIds by their Post.tier value.
   const idsByTier: Record<Tier, typeof realPostIds> = { PUBLIC: [], PRO: [], PRO_MAX: [] };
   const knownIds = new Set<string>();
   for (const post of posts) {
-    const tier = (post.tierRequired ?? 'PUBLIC') as Tier;
+    const tier = (post.tier ?? 'PUBLIC') as Tier;
     idsByTier[tier].push(post._id);
     knownIds.add(String(post._id));
   }

@@ -27,7 +27,7 @@ async function mkRoom(
   overrides: Partial<{
     game: 'BGMI' | 'FF';
     status: 'SCHEDULED' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
-    tierRequired: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+    tier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
     visibleFromAt: Date;
     resultEnabledAt: Date;
     roomCredPlain?: { roomId: string; roomPwd: string };
@@ -48,7 +48,7 @@ async function mkRoom(
     visibleFromAt: overrides.visibleFromAt ?? new Date('2026-04-23T11:55:00Z'),
     resultEnabledAt: overrides.resultEnabledAt ?? new Date('2026-04-23T12:30:00Z'),
     status: overrides.status ?? 'SCHEDULED',
-    tierRequired: overrides.tierRequired ?? 'PUBLIC',
+    tier: overrides.tier ?? 'PUBLIC',
     participantCount: (overrides.participants ?? []).length,
     registeredParticipants: overrides.participants ?? [],
     createdBy: new Types.ObjectId(),
@@ -94,7 +94,8 @@ describe('CustomRoomsService.listForDay', () => {
 
     const items = await svc.listForDay({
       userId,
-      userTier: 'PUBLIC',
+      subscriptions: [],
+      tier: 'PUBLIC',
       game: 'BGMI',
       now: new Date('2026-04-23T12:00:00Z'),
     });
@@ -105,7 +106,7 @@ describe('CustomRoomsService.listForDay', () => {
     // Flip the flag off — request throws FEATURE_DISABLED.
     await seedTournamentsFlag(false);
     await expect(
-      svc.listForDay({ userId, userTier: 'PUBLIC', game: 'BGMI' }),
+      svc.listForDay({ userId, subscriptions: [], tier: 'PUBLIC', game: 'BGMI' }),
     ).rejects.toMatchObject({ code: 'FEATURE_DISABLED' });
   });
 
@@ -116,15 +117,19 @@ describe('CustomRoomsService.listForDay', () => {
     const userId = new Types.ObjectId();
     await mkRoom(encryptor, {
       status: 'LIVE',
-      tierRequired: 'PRO',
+      tier: 'PRO',
       visibleFromAt: new Date('2026-04-23T11:55:00Z'),
       roomCredPlain: { roomId: 'ROOM-XYZ', roomPwd: 'PWD-123' },
       participants: [userId],
     });
 
+    const proSub = [
+      { tier: 'PRO' as const, status: 'ACTIVE' as const, expiresAt: new Date('2027-01-01') },
+    ];
     const items = await svc.listForDay({
       userId,
-      userTier: 'PRO',
+      subscriptions: proSub,
+      tier: 'PRO',
       game: 'BGMI',
       now: new Date('2026-04-23T12:00:00Z'),
     });
@@ -132,33 +137,44 @@ describe('CustomRoomsService.listForDay', () => {
     expect(items[0]?.credentials).toEqual({ roomId: 'ROOM-XYZ', roomPwd: 'PWD-123' });
   });
 
-  it('registered user with now < visibleFromAt OR tier < required gets credentials undefined', async () => {
+  it('Phase 11.4 — registered user with now < visibleFromAt → credentials undefined; PRO_MAX-only sub on PRO room → credentials undefined (strict)', async () => {
     const encryptor = new InMemoryEncryptor();
     const svc = new CustomRoomsService({ encryptor });
     await seedTournamentsFlag(true);
     const userId = new Types.ObjectId();
     await mkRoom(encryptor, {
       status: 'LIVE',
-      tierRequired: 'PRO',
+      tier: 'PRO',
       visibleFromAt: new Date('2026-04-23T12:00:00Z'),
       roomCredPlain: { roomId: 'ROOM-HIDDEN', roomPwd: 'PWD' },
       participants: [userId],
     });
 
+    const proSub = [
+      { tier: 'PRO' as const, status: 'ACTIVE' as const, expiresAt: new Date('2027-01-01') },
+    ];
     // Too early: before visibleFromAt.
     const early = await svc.listForDay({
       userId,
-      userTier: 'PRO',
+      subscriptions: proSub,
+      tier: 'PRO',
       game: 'BGMI',
       now: new Date('2026-04-23T11:59:00Z'),
     });
     expect(early[0]?.isRegistered).toBe(true);
     expect(early[0]?.credentials).toBeUndefined();
 
-    // Wrong tier: PUBLIC viewer on a PRO-required room.
+    // Phase 11.4 strict: PRO_MAX-only subscriber on a PRO room
+    // (theoretically possible after admin tier rotation) gets no
+    // credentials. Hierarchical model would have allowed; strict
+    // model denies.
+    const proMaxOnly = [
+      { tier: 'PRO_MAX' as const, status: 'ACTIVE' as const, expiresAt: new Date('2027-01-01') },
+    ];
     const wrongTier = await svc.listForDay({
       userId,
-      userTier: 'PUBLIC',
+      subscriptions: proMaxOnly,
+      tier: 'PRO',
       game: 'BGMI',
       now: new Date('2026-04-23T12:05:00Z'),
     });
@@ -174,10 +190,10 @@ describe('CustomRoomsService.register', () => {
     const { _id: roomId } = await mkRoom(encryptor, { status: 'SCHEDULED' });
     const userId = new Types.ObjectId();
 
-    const first = await svc.register(roomId, userId, 'PUBLIC');
+    const first = await svc.register(roomId, userId, []);
     expect(first).toEqual({ alreadyRegistered: false });
 
-    const second = await svc.register(roomId, userId, 'PUBLIC');
+    const second = await svc.register(roomId, userId, []);
     expect(second).toEqual({ alreadyRegistered: true });
 
     const after = await CustomRoomModel.findById(roomId);
@@ -196,7 +212,7 @@ describe('CustomRoomsService.register', () => {
     const participants = [reusedUser, ...Array.from({ length: 99 }, () => new Types.ObjectId())];
     const { _id: roomId } = await mkRoom(encryptor, { status: 'SCHEDULED', participants });
 
-    const res = await svc.register(roomId, reusedUser, 'PUBLIC');
+    const res = await svc.register(roomId, reusedUser, []);
     expect(res).toEqual({ alreadyRegistered: true });
 
     const after = await CustomRoomModel.findById(roomId);
@@ -213,7 +229,7 @@ describe('CustomRoomsService.register', () => {
     const { _id: roomId } = await mkRoom(encryptor, { status: 'SCHEDULED', participants });
     const newUser = new Types.ObjectId();
 
-    await expect(svc.register(roomId, newUser, 'PUBLIC')).rejects.toMatchObject({
+    await expect(svc.register(roomId, newUser, [])).rejects.toMatchObject({
       code: 'ROOM_FULL',
     });
   });
@@ -224,12 +240,12 @@ describe('CustomRoomsService.register', () => {
     await seedTournamentsFlag(true);
 
     const { _id: completedId } = await mkRoom(encryptor, { status: 'COMPLETED' });
-    await expect(svc.register(completedId, new Types.ObjectId(), 'PUBLIC')).rejects.toMatchObject({
+    await expect(svc.register(completedId, new Types.ObjectId(), [])).rejects.toMatchObject({
       code: 'ROOM_STATE_INVALID',
     });
 
     const { _id: cancelledId } = await mkRoom(encryptor, { status: 'CANCELLED' });
-    await expect(svc.register(cancelledId, new Types.ObjectId(), 'PUBLIC')).rejects.toMatchObject({
+    await expect(svc.register(cancelledId, new Types.ObjectId(), [])).rejects.toMatchObject({
       code: 'ROOM_STATE_INVALID',
     });
   });
@@ -239,7 +255,7 @@ describe('CustomRoomsService.register', () => {
     await seedTournamentsFlag(true);
 
     await expect(
-      svc.register(new Types.ObjectId(), new Types.ObjectId(), 'PUBLIC'),
+      svc.register(new Types.ObjectId(), new Types.ObjectId(), []),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });

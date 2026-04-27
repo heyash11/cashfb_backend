@@ -21,7 +21,7 @@ export const AdminPostCreateBodySchema = z
     scheduledAt: z.coerce.date(),
     status: StatusSchema.optional(),
     coinReward: z.number().int().min(0).max(100).optional(),
-    tierRequired: TierSchema.optional(),
+    tier: TierSchema.optional(),
     adsConfig: AdsConfigSchema.optional(),
   })
   .strict();
@@ -34,7 +34,7 @@ export const AdminPostUpdateBodySchema = z
     scheduledAt: z.coerce.date().optional(),
     status: StatusSchema.optional(),
     coinReward: z.number().int().min(0).max(100).optional(),
-    tierRequired: TierSchema.optional(),
+    tier: TierSchema.optional(),
     adsConfig: AdsConfigSchema.optional(),
     publishedAt: z.coerce.date().optional(),
     closedAt: z.coerce.date().optional(),

@@ -33,7 +33,7 @@ export class AdminPostsController {
     if (body.description !== undefined) input.description = body.description;
     if (body.status !== undefined) input.status = body.status;
     if (body.coinReward !== undefined) input.coinReward = body.coinReward;
-    if (body.tierRequired !== undefined) input.tierRequired = body.tierRequired;
+    if (body.tier !== undefined) input.tier = body.tier;
     if (body.adsConfig !== undefined) input.adsConfig = pickAdsConfig(body.adsConfig);
     const after = await this.service.create(input, actorId);
     return { before: null, after, resourceId: after._id };
@@ -50,7 +50,7 @@ export class AdminPostsController {
     if (body.scheduledAt !== undefined) patch.scheduledAt = body.scheduledAt;
     if (body.status !== undefined) patch.status = body.status;
     if (body.coinReward !== undefined) patch.coinReward = body.coinReward;
-    if (body.tierRequired !== undefined) patch.tierRequired = body.tierRequired;
+    if (body.tier !== undefined) patch.tier = body.tier;
     if (body.adsConfig !== undefined) patch.adsConfig = pickAdsConfig(body.adsConfig);
     if (body.publishedAt !== undefined) patch.publishedAt = body.publishedAt;
     if (body.closedAt !== undefined) patch.closedAt = body.closedAt;

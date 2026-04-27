@@ -7,12 +7,12 @@ import {
 } from '../../shared/errors/AppError.js';
 import type { CoinEventEmitter } from '../../shared/events/coinEvents.js';
 import type { PostAdsConfig, PostAttrs } from '../../shared/models/Post.model.js';
+import type { UserSubscriptionEntry } from '../../shared/models/User.model.js';
+import { userCanAccessTier, type Tier } from '../../shared/models/_tier.js';
 import { CoinTransactionRepository } from '../../shared/repositories/CoinTransaction.repository.js';
 import { PostCompletionRepository } from '../../shared/repositories/PostCompletion.repository.js';
 import { PostRepository } from '../../shared/repositories/Post.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
-
-type Tier = 'PUBLIC' | 'PRO' | 'PRO_MAX';
 
 export interface UserFacingPostDto {
   id: string;
@@ -22,7 +22,7 @@ export interface UserFacingPostDto {
   scheduledAt: Date;
   status: PostAttrs['status'];
   coinReward: number;
-  tierRequired: Tier;
+  tier: Tier;
   adsConfig?: PostAdsConfig;
   publishedAt?: Date;
   closedAt?: Date;
@@ -35,12 +35,7 @@ export interface PostServiceDeps {
   postCompletionRepo?: PostCompletionRepository;
   userRepo?: UserRepository;
   coinTxRepo?: CoinTransactionRepository;
-}
-
-function tierAllowsAccess(userTier: Tier, required: Tier): boolean {
-  if (required === 'PUBLIC') return true;
-  if (required === 'PRO') return userTier === 'PRO' || userTier === 'PRO_MAX';
-  return userTier === 'PRO_MAX';
+  clock?: () => Date;
 }
 
 function toDto(post: PostAttrs, completed: boolean): UserFacingPostDto {
@@ -51,7 +46,7 @@ function toDto(post: PostAttrs, completed: boolean): UserFacingPostDto {
     scheduledAt: post.scheduledAt,
     status: post.status,
     coinReward: post.coinReward,
-    tierRequired: post.tierRequired,
+    tier: post.tier,
     completed,
   };
   if (post.description) dto.description = post.description;
@@ -67,6 +62,7 @@ export class PostService {
   private readonly postCompletionRepo: PostCompletionRepository;
   private readonly userRepo: UserRepository;
   private readonly coinTxRepo: CoinTransactionRepository;
+  private readonly clock: () => Date;
 
   constructor(deps: PostServiceDeps) {
     this.coinEvents = deps.coinEvents;
@@ -74,29 +70,47 @@ export class PostService {
     this.postCompletionRepo = deps.postCompletionRepo ?? new PostCompletionRepository();
     this.userRepo = deps.userRepo ?? new UserRepository();
     this.coinTxRepo = deps.coinTxRepo ?? new CoinTransactionRepository();
+    this.clock = deps.clock ?? (() => new Date());
   }
 
+  /**
+   * Phase 11.4 — tier-scoped daily feed. The list endpoint contract:
+   *
+   *   - `tier` parameter is REQUIRED (controller-side Zod check).
+   *   - Authorization: `userCanAccessTier(user.subscriptions, tier)` —
+   *     STRICT. PRO_MAX-only user querying tier='PRO' → 403; their
+   *     PRO_MAX subscription doesn't grant PRO access. Caller is
+   *     expected to pre-check or handle the throw.
+   *   - Filter: STRICT equality on `Post.tier`. PRO_MAX user querying
+   *     tier='PRO_MAX' gets ONLY tier='PRO_MAX' posts (no PUBLIC
+   *     inclusion). This is the parallel-section semantic flip from
+   *     hierarchical gating.
+   */
   async listForDate(
     dayKey: string,
     userId: Types.ObjectId,
-    userTier: Tier,
+    tier: Tier,
   ): Promise<UserFacingPostDto[]> {
-    const posts = await this.postRepo.listForDay(dayKey);
+    const posts = await this.postRepo.listForDayAndTier(dayKey, tier);
     const completions = await this.postCompletionRepo.find({ userId, dayKey });
     const completedIds = new Set(completions.map((c) => String(c.postId)));
-    return posts
-      .filter((p) => tierAllowsAccess(userTier, p.tierRequired))
-      .map((p) => toDto(p, completedIds.has(String(p._id))));
+    return posts.map((p) => toDto(p, completedIds.has(String(p._id))));
   }
 
+  /**
+   * Phase 11.4 — single-resource fetch. Per-resource auth is STRICT:
+   * a PRO_MAX-only user with a deep link to a PRO post gets `null`
+   * (caller surfaces 404). The list-scope and per-resource auth
+   * agree: only your subscribed tiers are accessible, full stop.
+   */
   async getById(
     postId: Types.ObjectId | string,
     userId: Types.ObjectId,
-    userTier: Tier,
+    subscriptions: ReadonlyArray<UserSubscriptionEntry>,
   ): Promise<UserFacingPostDto | null> {
     const post = await this.postRepo.findById(postId);
     if (!post) return null;
-    if (!tierAllowsAccess(userTier, post.tierRequired)) return null;
+    if (!userCanAccessTier(subscriptions, post.tier, this.clock())) return null;
     const completion = await this.postCompletionRepo.findByUserPost(userId, post._id);
     return toDto(post, completion !== null);
   }
@@ -105,10 +119,14 @@ export class PostService {
    * Atomic post completion. See docs/BUILD_PLAN.md §Phase 3 +
    * CONVENTIONS.md §Transactions — pitfalls and patterns.
    *
+   * Phase 11.4 — auth uses `userCanAccessTier(subscriptions, ...)`.
+   * STRICT semantics: only subscribed tiers are accessible.
+   *
    * Pre-transaction (fast-reject, no writes):
    *   - NotFoundError if post absent.
    *   - ConflictError 'POST_NOT_LIVE' if status != LIVE.
-   *   - ForbiddenError 'TIER_REQUIRED' if user tier insufficient.
+   *   - ForbiddenError 'TIER_NOT_ACCESSIBLE' if user lacks the
+   *     requested tier subscription.
    *
    * Transaction (pattern 1 per CONVENTIONS.md — upsert to keep the
    * session alive on the already-completed branch):
@@ -125,15 +143,18 @@ export class PostService {
   async completePost(input: {
     postId: Types.ObjectId;
     userId: Types.ObjectId;
-    userTier: Tier;
+    subscriptions: ReadonlyArray<UserSubscriptionEntry>;
   }): Promise<{ coinBalance: number; alreadyCompleted: boolean }> {
     const post = await this.postRepo.findById(input.postId);
     if (!post) throw new NotFoundError('Post not found');
     if (post.status !== 'LIVE') {
       throw new ConflictError('POST_NOT_LIVE', `Post is ${post.status}, cannot complete`);
     }
-    if (!tierAllowsAccess(input.userTier, post.tierRequired)) {
-      throw new ForbiddenError('TIER_REQUIRED', `Post requires tier ${post.tierRequired}`);
+    if (!userCanAccessTier(input.subscriptions, post.tier, this.clock())) {
+      throw new ForbiddenError(
+        'TIER_NOT_ACCESSIBLE',
+        `Subscription required to complete a ${post.tier} post`,
+      );
     }
 
     const { dayKey, coinReward } = post;
@@ -148,11 +169,6 @@ export class PostService {
       // forever. Upsert keeps the transaction alive on the
       // already-completed path: it matches the existing doc
       // (upsertedId is null) and we branch on that.
-      //
-      // Returning the result from withTransaction (rather than
-      // mutating a closed-over let) also sidesteps TS closure-
-      // mutation narrowing issues. See CONVENTIONS.md §Transactions
-      // and punitive writes.
       const result = await session.withTransaction<{
         coinBalance: number;
         alreadyCompleted: boolean;

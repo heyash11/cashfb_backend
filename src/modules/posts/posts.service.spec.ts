@@ -39,7 +39,7 @@ async function mkPost(overrides: Partial<PostAttrs> = {}): Promise<PostDoc> {
     scheduledAt: new Date('2026-04-23T12:00:00Z'),
     status: 'LIVE',
     coinReward: 1,
-    tierRequired: 'PUBLIC',
+    tier: 'PUBLIC',
     createdBy: new Types.ObjectId(),
     ...overrides,
   });
@@ -72,7 +72,7 @@ describe('PostService.completePost — happy path', () => {
     const result = await svc.completePost({
       postId: post._id,
       userId: user._id,
-      userTier: 'PUBLIC',
+      subscriptions: [],
     });
 
     expect(result.alreadyCompleted).toBe(false);
@@ -113,14 +113,14 @@ describe('PostService.completePost — idempotency', () => {
     const first = await svc.completePost({
       postId: post._id,
       userId: user._id,
-      userTier: 'PUBLIC',
+      subscriptions: [],
     });
     expect(first.alreadyCompleted).toBe(false);
 
     const second = await svc.completePost({
       postId: post._id,
       userId: user._id,
-      userTier: 'PUBLIC',
+      subscriptions: [],
     });
     expect(second.alreadyCompleted).toBe(true);
     expect(second.coinBalance).toBe(1);
@@ -146,7 +146,7 @@ describe('PostService.completePost — reject paths', () => {
       svc.completePost({
         postId: new Types.ObjectId(),
         userId: user._id,
-        userTier: 'PUBLIC',
+        subscriptions: [],
       }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND', httpStatus: 404 });
   });
@@ -157,7 +157,7 @@ describe('PostService.completePost — reject paths', () => {
     const post = await mkPost({ status: 'CLOSED' });
 
     await expect(
-      svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' }),
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] }),
     ).rejects.toMatchObject({ code: 'POST_NOT_LIVE', httpStatus: 409 });
   });
 
@@ -167,7 +167,7 @@ describe('PostService.completePost — reject paths', () => {
     const post = await mkPost({ status: 'DRAFT' });
 
     await expect(
-      svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' }),
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] }),
     ).rejects.toMatchObject({ code: 'POST_NOT_LIVE' });
   });
 
@@ -177,18 +177,50 @@ describe('PostService.completePost — reject paths', () => {
     const post = await mkPost({ status: 'SCHEDULED' });
 
     await expect(
-      svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' }),
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] }),
     ).rejects.toMatchObject({ code: 'POST_NOT_LIVE' });
   });
 
-  it('PRO-gated post + PUBLIC user → TIER_REQUIRED 403', async () => {
+  it('Phase 11.4 — PRO post + no PRO subscription → TIER_NOT_ACCESSIBLE 403 (strict subscription auth)', async () => {
     const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser();
-    const post = await mkPost({ tierRequired: 'PRO' });
+    const post = await mkPost({ tier: 'PRO' });
 
     await expect(
-      svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' }),
-    ).rejects.toMatchObject({ code: 'TIER_REQUIRED', httpStatus: 403 });
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE', httpStatus: 403 });
+  });
+
+  it('Phase 11.4 — PRO post + PRO_MAX-only subscription → TIER_NOT_ACCESSIBLE 403 (strict, NOT hierarchical)', async () => {
+    const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser();
+    const post = await mkPost({ tier: 'PRO' });
+
+    // PRO_MAX subscription does NOT grant access to PRO content under
+    // the strict subscription model.
+    const proMaxOnly = [
+      { tier: 'PRO_MAX' as const, status: 'ACTIVE' as const, expiresAt: new Date('2027-01-01') },
+    ];
+
+    await expect(
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: proMaxOnly }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE', httpStatus: 403 });
+  });
+
+  it('Phase 11.4 — PRO post + active PRO subscription → succeeds', async () => {
+    const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser();
+    const post = await mkPost({ tier: 'PRO' });
+    const proSub = [
+      { tier: 'PRO' as const, status: 'ACTIVE' as const, expiresAt: new Date('2027-01-01') },
+    ];
+
+    const result = await svc.completePost({
+      postId: post._id,
+      userId: user._id,
+      subscriptions: proSub,
+    });
+    expect(result.alreadyCompleted).toBe(false);
   });
 });
 
@@ -204,8 +236,8 @@ describe('PostService.completePost — concurrency', () => {
     const post = await mkPost();
 
     const [a, b] = await Promise.allSettled([
-      svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' }),
-      svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' }),
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] }),
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] }),
     ]);
 
     expect(a.status).toBe('fulfilled');
@@ -245,7 +277,7 @@ describe('PostService.completePost — rollback', () => {
     const post = await mkPost();
 
     await expect(
-      svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' }),
+      svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] }),
     ).rejects.toThrow(/simulated/);
 
     expect(await PostCompletionModel.countDocuments({ userId: user._id })).toBe(0);
@@ -268,7 +300,7 @@ describe('PostService.listForDate', () => {
     await mkPost({ title: 'B' });
     await mkPost({ title: 'C' });
 
-    await svc.completePost({ postId: postA._id, userId: user._id, userTier: 'PUBLIC' });
+    await svc.completePost({ postId: postA._id, userId: user._id, subscriptions: [] });
 
     const list = await svc.listForDate('2026-04-23', user._id, 'PUBLIC');
     expect(list).toHaveLength(3);
@@ -294,21 +326,38 @@ describe('PostService.listForDate', () => {
     expect(titles).toEqual(['Closed', 'Live', 'Scheduled']);
   });
 
-  it('filters out tier-gated posts the user cannot access', async () => {
+  it('Phase 11.4 — listForDate is STRICT-scoped: tier query returns ONLY that tier (no hierarchy)', async () => {
     const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser();
-    await mkPost({ title: 'Free', tierRequired: 'PUBLIC' });
-    await mkPost({ title: 'Pro', tierRequired: 'PRO' });
-    await mkPost({ title: 'Max', tierRequired: 'PRO_MAX' });
+    await mkPost({ title: 'Free', tier: 'PUBLIC' });
+    await mkPost({ title: 'Pro', tier: 'PRO' });
+    await mkPost({ title: 'Max', tier: 'PRO_MAX' });
 
     const asPublic = await svc.listForDate('2026-04-23', user._id, 'PUBLIC');
     expect(asPublic.map((p) => p.title).sort()).toEqual(['Free']);
 
     const asPro = await svc.listForDate('2026-04-23', user._id, 'PRO');
-    expect(asPro.map((p) => p.title).sort()).toEqual(['Free', 'Pro']);
+    // Strict: only PRO posts. NO 'Free' inclusion.
+    expect(asPro.map((p) => p.title).sort()).toEqual(['Pro']);
 
     const asProMax = await svc.listForDate('2026-04-23', user._id, 'PRO_MAX');
-    expect(asProMax.map((p) => p.title).sort()).toEqual(['Free', 'Max', 'Pro']);
+    // Strict: only PRO_MAX posts. NO 'Free' or 'Pro' inclusion.
+    expect(asProMax.map((p) => p.title).sort()).toEqual(['Max']);
+  });
+
+  it('Phase 11.4 — behavior-reversal proof: PRO_MAX user querying tier=PUBLIC sees only PUBLIC posts', async () => {
+    // Auth check happens at controller layer; service-level listForDate
+    // simply applies the strict tier filter. The semantic flip from
+    // hierarchical inclusion to parallel scoping is the headline
+    // change.
+    const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser();
+    await mkPost({ title: 'Free', tier: 'PUBLIC' });
+    await mkPost({ title: 'Pro', tier: 'PRO' });
+    await mkPost({ title: 'Max', tier: 'PRO_MAX' });
+
+    const result = await svc.listForDate('2026-04-23', user._id, 'PUBLIC');
+    expect(result.map((p) => p.title)).toEqual(['Free']);
   });
 });
 
@@ -322,7 +371,7 @@ describe('PostService.getById', () => {
     const user = await mkUser();
     const post = await mkPost();
 
-    const dto = await svc.getById(post._id, user._id, 'PUBLIC');
+    const dto = await svc.getById(post._id, user._id, []);
     expect(dto?.title).toBe('Test Post');
     expect(dto?.completed).toBe(false);
   });
@@ -332,22 +381,33 @@ describe('PostService.getById', () => {
     const user = await mkUser();
     const post = await mkPost();
 
-    await svc.completePost({ postId: post._id, userId: user._id, userTier: 'PUBLIC' });
+    await svc.completePost({ postId: post._id, userId: user._id, subscriptions: [] });
 
-    const dto = await svc.getById(post._id, user._id, 'PUBLIC');
+    const dto = await svc.getById(post._id, user._id, []);
     expect(dto?.completed).toBe(true);
   });
 
   it('returns null for non-existent post', async () => {
     const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser();
-    expect(await svc.getById(new Types.ObjectId(), user._id, 'PUBLIC')).toBeNull();
+    expect(await svc.getById(new Types.ObjectId(), user._id, [])).toBeNull();
   });
 
-  it('returns null for tier-restricted post the user cannot access', async () => {
+  it('Phase 11.4 — returns null for tier-restricted post the user cannot access (strict subscription)', async () => {
     const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser();
-    const post = await mkPost({ tierRequired: 'PRO_MAX' });
-    expect(await svc.getById(post._id, user._id, 'PUBLIC')).toBeNull();
+    const post = await mkPost({ tier: 'PRO_MAX' });
+    // Empty subscriptions[] → no PRO_MAX access → null.
+    expect(await svc.getById(post._id, user._id, [])).toBeNull();
+  });
+
+  it('Phase 11.4 — PRO_MAX-only subscription → cannot access PRO post via deep link (strict, NOT hierarchical)', async () => {
+    const svc = new PostService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser();
+    const post = await mkPost({ tier: 'PRO' });
+    const proMaxOnly = [
+      { tier: 'PRO_MAX' as const, status: 'ACTIVE' as const, expiresAt: new Date('2027-01-01') },
+    ];
+    expect(await svc.getById(post._id, user._id, proMaxOnly)).toBeNull();
   });
 });

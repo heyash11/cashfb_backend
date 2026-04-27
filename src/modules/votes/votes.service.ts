@@ -7,7 +7,7 @@ import {
   UnauthorizedError,
 } from '../../shared/errors/AppError.js';
 import type { CoinEventEmitter } from '../../shared/events/coinEvents.js';
-import { tierGrantsAccess, type Tier } from '../../shared/models/_tier.js';
+import { userCanAccessTier, type Tier } from '../../shared/models/_tier.js';
 import { CoinTransactionRepository } from '../../shared/repositories/CoinTransaction.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
 import { VoteRepository } from '../../shared/repositories/Vote.repository.js';
@@ -36,22 +36,22 @@ export class VoteService {
   }
 
   /**
-   * Cast a once-per-tier-per-day vote (Phase 11.1). See
-   * docs/BUILD_PLAN.md §Phase 3 + CONVENTIONS.md §Transactions —
-   * pitfalls and patterns.
+   * Cast a once-per-tier-per-day vote.
    *
-   * Phase 11.1 — `tier` is now a required input. The vote is
-   * snapshotted with this tier on the row, and the unique index
-   * `{userId, tier, dayKey}` (Phase 11.0) makes per-tier dedup
-   * automatic. The user's `tier` field on the User row is the
-   * authoritative authorization source for now; Phase 11.5 will
-   * replace this with a subscriptions[] check.
+   * Phase 11.1 added the `tier` parameter and snapshotted it onto
+   * the Vote row; Phase 11.0's `{userId, tier, dayKey}` unique
+   * index makes per-tier dedup automatic.
+   *
+   * Phase 11.4 — auth flipped from hierarchical (`tierGrantsAccess`)
+   * to STRICT subscription-based (`userCanAccessTier(subscriptions,
+   * tier, now)`). A PRO_MAX-only subscriber can NOT vote in PRO;
+   * each tier section requires its own paid subscription.
    *
    * Error order (CONVENTIONS.md §HTTP error layering):
    *   - 400 ValidationError       (Zod, controller layer)
    *   - 401 UnauthorizedError      (user not found)
    *   - 403 USER_BLOCKED           (admin-block)
-   *   - 403 TIER_NOT_ACCESSIBLE    (Phase 11.1 — auth before payment)
+   *   - 403 TIER_NOT_ACCESSIBLE    (auth before payment)
    *   - 402 INSUFFICIENT_COINS     (balance + admin-block race)
    *   - 409 VOTE_ALREADY_CAST      (mongo dup key on the tier slot)
    */
@@ -69,7 +69,7 @@ export class VoteService {
     if (user.blocked.isBlocked) {
       throw new ForbiddenError('USER_BLOCKED', 'Account is blocked');
     }
-    if (!tierGrantsAccess(user.tier, input.tier)) {
+    if (!userCanAccessTier(user.subscriptions ?? [], input.tier, new Date())) {
       throw new ForbiddenError(
         'TIER_NOT_ACCESSIBLE',
         `Subscription required to vote in ${input.tier}`,

@@ -20,7 +20,7 @@ export interface AdminCreateRoomInput {
   scheduledAt: Date;
   visibleFromAt?: Date;
   resultEnabledAt?: Date;
-  tierRequired?: Tier;
+  tier?: Tier;
   pageNumber?: number;
   notice?: string;
 }
@@ -120,7 +120,7 @@ export class AdminCustomRoomsService {
       dayKey: input.dayKey,
       scheduledAt: input.scheduledAt,
       status: 'SCHEDULED',
-      tierRequired: input.tierRequired ?? 'PUBLIC',
+      tier: input.tier ?? 'PUBLIC',
       participantCount: 0,
       registeredParticipants: [],
       createdBy: actorId,

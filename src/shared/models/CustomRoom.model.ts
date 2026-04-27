@@ -1,5 +1,6 @@
 import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+import { TIER_VALUES, type Tier } from './_tier.js';
 
 export interface CustomRoomAttrs {
   _id: Types.ObjectId;
@@ -22,7 +23,13 @@ export interface CustomRoomAttrs {
   status: 'SCHEDULED' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
   pageNumber?: number;
   notice?: string;
-  tierRequired: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+  /**
+   * Phase 11.4 — renamed from `tierRequired`. Parallel-tier scoping
+   * field; list endpoints filter by exact match. Per-resource auth
+   * (register, getResult) checks the user's strict subscription set
+   * via `userCanAccessTier`.
+   */
+  tier: Tier;
   participantCount: number;
   /**
    * User IDs of registered participants. Bounded at 100 (BGMI's
@@ -64,11 +71,7 @@ const CustomRoomSchema = new Schema(
     },
     pageNumber: Number,
     notice: String,
-    tierRequired: {
-      type: String,
-      enum: ['PUBLIC', 'PRO', 'PRO_MAX'],
-      default: 'PUBLIC',
-    },
+    tier: { type: String, enum: TIER_VALUES, default: 'PUBLIC', required: true },
     participantCount: { type: Number, default: 0 },
     registeredParticipants: { type: [{ type: Types.ObjectId, ref: 'User' }], default: [] },
     createdBy: { type: Types.ObjectId, ref: 'AdminUser', required: true },
@@ -76,8 +79,10 @@ const CustomRoomSchema = new Schema(
   baseSchemaOptions,
 );
 
-CustomRoomSchema.index({ dayKey: 1, game: 1, scheduledAt: 1 }); // daily feed per game
+CustomRoomSchema.index({ dayKey: 1, game: 1, scheduledAt: 1 }); // legacy daily feed per game (retained)
 CustomRoomSchema.index({ status: 1, scheduledAt: 1 }); // status sweep
+// Phase 11.4 — tier-scoped daily feed per game.
+CustomRoomSchema.index({ tier: 1, dayKey: 1, game: 1, scheduledAt: 1 });
 
 export type CustomRoomDoc = HydratedDocument<CustomRoomAttrs>;
 export const CustomRoomModel: Model<CustomRoomAttrs> = model<CustomRoomAttrs>(

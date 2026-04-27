@@ -516,9 +516,20 @@ describe('VoteService.castVote — tier authorization', () => {
     ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE' });
   });
 
-  it('PRO user voting in PRO succeeds; Vote.tier = PRO', async () => {
+  it('Phase 11.4 — PRO user with active PRO subscription voting in PRO succeeds', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 3, tier: 'PRO' });
+    const user = await mkUser({
+      coinBalance: 3,
+      tier: 'PRO',
+      subscriptions: [
+        {
+          tier: 'PRO',
+          status: 'ACTIVE',
+          expiresAt: new Date('2027-01-01'),
+          subscriptionId: new Types.ObjectId(),
+        },
+      ],
+    });
 
     const res = await svc.castVote({
       userId: user._id,
@@ -533,9 +544,20 @@ describe('VoteService.castVote — tier authorization', () => {
     expect(vote?.tier).toBe('PRO');
   });
 
-  it('PRO user voting in PRO_MAX → TIER_NOT_ACCESSIBLE (hierarchical gating)', async () => {
+  it('Phase 11.4 — PRO-only user voting in PRO_MAX → TIER_NOT_ACCESSIBLE (strict)', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 3, tier: 'PRO' });
+    const user = await mkUser({
+      coinBalance: 3,
+      tier: 'PRO',
+      subscriptions: [
+        {
+          tier: 'PRO',
+          status: 'ACTIVE',
+          expiresAt: new Date('2027-01-01'),
+          subscriptionId: new Types.ObjectId(),
+        },
+      ],
+    });
 
     await expect(
       svc.castVote({
@@ -548,9 +570,48 @@ describe('VoteService.castVote — tier authorization', () => {
     ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE' });
   });
 
-  it('PRO_MAX user can vote in PRO_MAX, PRO, and PUBLIC (parallel tier slots)', async () => {
+  it('Phase 11.4 — PRO_MAX-only user voting in PRO → TIER_NOT_ACCESSIBLE (strict, NOT hierarchical — KEY FLIP)', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 9, tier: 'PRO_MAX' });
+    const user = await mkUser({
+      coinBalance: 3,
+      tier: 'PRO_MAX',
+      subscriptions: [
+        {
+          tier: 'PRO_MAX',
+          status: 'ACTIVE',
+          expiresAt: new Date('2027-01-01'),
+          subscriptionId: new Types.ObjectId(),
+        },
+      ],
+    });
+
+    await expect(
+      svc.castVote({
+        userId: user._id,
+        tier: 'PRO',
+        target: 'alpha',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE' });
+  });
+
+  it('Phase 11.4 — user with [PRO, PRO_MAX] subscriptions can vote in PUBLIC, PRO, AND PRO_MAX (parallel tier slots)', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const future = new Date('2027-01-01');
+    const user = await mkUser({
+      coinBalance: 9,
+      tier: 'PRO_MAX',
+      subscriptions: [
+        { tier: 'PRO', status: 'ACTIVE', expiresAt: future, subscriptionId: new Types.ObjectId() },
+        {
+          tier: 'PRO_MAX',
+          status: 'ACTIVE',
+          expiresAt: future,
+          subscriptionId: new Types.ObjectId(),
+        },
+      ],
+    });
 
     for (const tier of ['PUBLIC', 'PRO', 'PRO_MAX'] as const) {
       const res = await svc.castVote({
@@ -570,9 +631,20 @@ describe('VoteService.castVote — tier authorization', () => {
     expect(refreshed?.totalVotesCast).toBe(3);
   });
 
-  it('per-tier dedup: second PUBLIC vote same day → VOTE_ALREADY_CAST; PRO slot still open', async () => {
+  it('Phase 11.4 — per-tier dedup: second PUBLIC vote same day → VOTE_ALREADY_CAST; PRO slot still open with PRO sub', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 9, tier: 'PRO' });
+    const user = await mkUser({
+      coinBalance: 9,
+      tier: 'PRO',
+      subscriptions: [
+        {
+          tier: 'PRO',
+          status: 'ACTIVE',
+          expiresAt: new Date('2027-01-01'),
+          subscriptionId: new Types.ObjectId(),
+        },
+      ],
+    });
 
     await svc.castVote({
       userId: user._id,
@@ -605,6 +677,34 @@ describe('VoteService.castVote — tier authorization', () => {
     const refreshed = await UserModel.findById(user._id);
     expect(refreshed?.coinBalance).toBe(3); // 9 - 3 - 3 = 3
     expect(refreshed?.totalVotesCast).toBe(2);
+  });
+
+  it('Phase 11.4 — user loses PRO subscription mid-day, vote in PRO blocked', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const past = new Date('2020-01-01');
+    const user = await mkUser({
+      coinBalance: 3,
+      tier: 'PRO',
+      subscriptions: [
+        // Cancelled + past expiresAt → no longer active per derivation rule.
+        {
+          tier: 'PRO',
+          status: 'CANCELLED',
+          expiresAt: past,
+          subscriptionId: new Types.ObjectId(),
+        },
+      ],
+    });
+
+    await expect(
+      svc.castVote({
+        userId: user._id,
+        tier: 'PRO',
+        target: 'alpha',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE' });
   });
 
   it('error order: tier check fires BEFORE balance check (auth before payment)', async () => {

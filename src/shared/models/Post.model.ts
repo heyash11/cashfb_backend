@@ -1,5 +1,6 @@
 import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
+import { TIER_VALUES, type Tier } from './_tier.js';
 
 export interface PostAdsConfig {
   topBannerKey?: string;
@@ -16,7 +17,14 @@ export interface PostAttrs {
   scheduledAt: Date;
   status: 'DRAFT' | 'SCHEDULED' | 'LIVE' | 'CLOSED';
   coinReward: number;
-  tierRequired: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+  /**
+   * Phase 11.4 — renamed from `tierRequired`. Under the parallel-
+   * tier product model this is a SCOPING field (which tab the post
+   * appears on), not a HIERARCHICAL gate. List endpoints filter by
+   * exact match; per-resource auth (getById, completePost) checks
+   * the user's strict subscription set via `userCanAccessTier`.
+   */
+  tier: Tier;
   adsConfig?: PostAdsConfig;
   createdBy: Types.ObjectId;
   publishedAt?: Date;
@@ -36,11 +44,7 @@ const PostSchema = new Schema(
       index: true,
     },
     coinReward: { type: Number, default: 1 },
-    tierRequired: {
-      type: String,
-      enum: ['PUBLIC', 'PRO', 'PRO_MAX'],
-      default: 'PUBLIC',
-    },
+    tier: { type: String, enum: TIER_VALUES, default: 'PUBLIC', required: true },
     adsConfig: {
       topBannerKey: String,
       bottomBannerKey: String,
@@ -52,7 +56,11 @@ const PostSchema = new Schema(
   baseSchemaOptions,
 );
 
-PostSchema.index({ dayKey: 1, status: 1, scheduledAt: 1 }); // daily feed
+PostSchema.index({ dayKey: 1, status: 1, scheduledAt: 1 }); // daily feed (legacy, retained)
+// Phase 11.4 — tier-scoped daily feed. Prefix on `tier` keeps the
+// per-tab list endpoint equality-bounded; secondary keys cover the
+// status filter + scheduledAt sort.
+PostSchema.index({ tier: 1, dayKey: 1, status: 1, scheduledAt: 1 });
 
 export type PostDoc = HydratedDocument<PostAttrs>;
 export const PostModel: Model<PostAttrs> = model<PostAttrs>('Post', PostSchema, 'posts');

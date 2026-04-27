@@ -29,22 +29,57 @@ export const SUBSCRIBABLE_TIER_VALUES = [
 const TIER_RANK: Record<Tier, number> = { PUBLIC: 0, PRO: 1, PRO_MAX: 2 };
 
 /**
- * Phase 11.1 — hierarchical access predicate. PRO_MAX subscribers
- * can vote in PRO_MAX/PRO/PUBLIC; PRO subscribers in PRO/PUBLIC;
- * PUBLIC users in PUBLIC only.
+ * @deprecated Phase 11.4 — replaced by `userCanAccessTier`. The
+ * hierarchical-gating semantic was wrong under the parallel-tier
+ * product model: a PRO_MAX-only subscriber does NOT have access to
+ * PRO content (they didn't pay for it). Tier subscriptions are
+ * stackable and genuinely independent.
  *
- * This matches the legacy `posts.service.ts.tierAllowsAccess` and
- * `custom-rooms.service.ts.TIER_ORDER` semantics that gate single-
- * tier list endpoints. Phase 11.5 will replace this with a
- * subscriptions[]-based check on the User row, which flips the
- * semantic from "subscribed to a higher tier grants lower-tier
- * access" to "subscribed to a tier grants ONLY that tier" — the
- * parallel-section product model. Don't generalize this helper
- * across modules in 11.1; it lives here so the votes module can
- * adopt the new helper without touching posts/custom-rooms.
+ * Retained without callers for one cleanup chunk so backfill /
+ * migration tooling and any straggler tests still compile. Removal
+ * in Phase 11.5 along with the legacy `User.tier` denormalized
+ * field that this helper read.
  */
 export function tierGrantsAccess(userTier: Tier, requestedTier: Tier): boolean {
   return TIER_RANK[userTier] >= TIER_RANK[requestedTier];
+}
+
+/**
+ * Phase 11.4 — strict subscription-based access predicate. The
+ * canonical replacement for `tierGrantsAccess`. Reads from
+ * `User.subscriptions[]` (Phase 11.0 schema, Phase 11.3 writers)
+ * and applies the same active-entry rule as `deriveCurrentTier`
+ * (single source of truth for "active for access purposes").
+ *
+ * Rules:
+ *   PUBLIC  → always true (free section, no subscription needed)
+ *   PRO     → user has an active PRO entry in subscriptions[]
+ *   PRO_MAX → user has an active PRO_MAX entry in subscriptions[]
+ *
+ * "Active" matches `isActiveForDerivation`:
+ *   status === 'ACTIVE' OR
+ *   (status === 'CANCELLED' AND expiresAt > now) — grace period.
+ *
+ * EXPIRED status NEVER counts (defense-in-depth for delayed
+ * sweep cycles; sweep should have removed the entry already).
+ *
+ * Used by:
+ *   - Vote casting auth (was Phase 11.1's hierarchical check)
+ *   - Posts list / getById / completePost auth
+ *   - CustomRoom list / register / getResult auth
+ *   - Any future tier-gated endpoint
+ */
+export function userCanAccessTier(
+  subscriptions: ReadonlyArray<DerivationSubscriptionEntry>,
+  requestedTier: Tier,
+  now: Date,
+): boolean {
+  if (requestedTier === 'PUBLIC') return true;
+  for (const entry of subscriptions) {
+    if (entry.tier !== requestedTier) continue;
+    if (isActiveForDerivation(entry, now)) return true;
+  }
+  return false;
 }
 
 /**

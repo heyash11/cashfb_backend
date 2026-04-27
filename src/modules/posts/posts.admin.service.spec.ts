@@ -41,7 +41,7 @@ describe('AdminPostService', () => {
     expect(post.title).toBe('Today Post');
     expect(post.status).toBe('DRAFT');
     expect(post.coinReward).toBe(1);
-    expect(post.tierRequired).toBe('PUBLIC');
+    expect(post.tier).toBe('PUBLIC');
     expect(String(post.createdBy)).toBe(String(admin));
   });
 

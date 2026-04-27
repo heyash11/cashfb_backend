@@ -13,7 +13,7 @@ export const AdminRoomCreateBodySchema = z
     scheduledAt: z.coerce.date(),
     visibleFromAt: z.coerce.date().optional(),
     resultEnabledAt: z.coerce.date().optional(),
-    tierRequired: TierSchema.optional(),
+    tier: TierSchema.optional(),
     pageNumber: z.number().int().min(1).optional(),
     notice: z.string().max(500).optional(),
   })

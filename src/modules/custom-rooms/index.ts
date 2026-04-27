@@ -5,8 +5,8 @@ export {
   type GetResultTile,
   type ListRoomsInput,
   type ListRoomsItem,
-  type Tier,
 } from './custom-rooms.service.js';
+export type { Tier } from '../../shared/models/_tier.js';
 export {
   AdminCustomRoomsService,
   type AdminCreateRoomInput,

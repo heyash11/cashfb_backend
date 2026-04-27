@@ -1,11 +1,11 @@
 import { z } from 'zod';
+import { TIER_VALUES } from '../../shared/models/_tier.js';
 
 /**
- * Query + param schemas for user-facing post endpoints. Bodies are
- * not validated this chunk because the only user POST (`complete`)
- * carries no body. Controllers invoke `.parse(req.query | req.params)`
- * directly; ZodErrors map to `ValidationError` via the global error
- * handler.
+ * Query + param schemas for user-facing post endpoints.
+ *
+ * Phase 11.4 — `tier` is REQUIRED on the list query. Each tier tab
+ * is a separate fetch; missing tier → 400 ValidationError.
  */
 
 const ObjectIdSchema = z.string().regex(/^[0-9a-f]{24}$/i, 'invalid ObjectId');
@@ -20,6 +20,7 @@ export const PostIdParamsSchema = z
 export const ListPostsQuerySchema = z
   .object({
     date: DayKeySchema,
+    tier: z.enum(TIER_VALUES),
   })
   .strict();
 
