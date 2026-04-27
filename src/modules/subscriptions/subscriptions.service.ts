@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import mongoose, { type Types } from 'mongoose';
+import mongoose, { type ClientSession, type Types } from 'mongoose';
 import type Razorpay from 'razorpay';
 import { env } from '../../config/env.js';
 import { getRazorpayClient } from '../../config/razorpay.js';
@@ -9,10 +9,16 @@ import { enqueueInvoice } from '../../shared/jobs/enqueue.js';
 import type { SubscriptionAttrs } from '../../shared/models/Subscription.model.js';
 import { SubscriptionModel } from '../../shared/models/Subscription.model.js';
 import { SubscriptionPaymentModel } from '../../shared/models/SubscriptionPayment.model.js';
+import { UserModel } from '../../shared/models/User.model.js';
+import type { SubscribableTier } from '../../shared/models/_tier.js';
 import { AppConfigRepository } from '../../shared/repositories/AppConfig.repository.js';
 import { SubscriptionRepository } from '../../shared/repositories/Subscription.repository.js';
 import { SubscriptionPaymentRepository } from '../../shared/repositories/SubscriptionPayment.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
+import {
+  buildDeriveTierExpiresAtPipelineExpr,
+  buildDeriveTierPipelineExpr,
+} from './_subscriptions.pipelines.js';
 
 export type Tier = 'PRO' | 'PRO_MAX';
 
@@ -363,9 +369,6 @@ export class SubscriptionService {
       subUpdate['$inc'] = { paidCount: 1 };
     }
 
-    const userUpdate: Record<string, unknown> = { tier: sub.tier };
-    if (currentEnd) userUpdate['tierExpiresAt'] = currentEnd;
-
     const session = await mongoose.startSession();
     let paymentId: Types.ObjectId | null = null;
     try {
@@ -383,7 +386,18 @@ export class SubscriptionService {
           }
 
           await this.subRepo.updateOne({ _id: sub._id }, subUpdate, { session });
-          await this.userRepo.updateOne({ _id: user._id }, { $set: userUpdate }, { session });
+          // Phase 11.3 — atomic upsert of the subscriptions[] entry
+          // for this tier + derive denormalized tier/tierExpiresAt
+          // in a single pipeline update. Replaces the legacy
+          // `$set: { tier, tierExpiresAt }` flat write.
+          await this.upsertSubscriptionEntryAndDeriveTier(
+            user._id,
+            sub.tier,
+            'ACTIVE',
+            currentEnd,
+            sub._id,
+            session,
+          );
 
           return { paymentId: upsertRes.upsertedId as unknown as Types.ObjectId };
         },
@@ -422,10 +436,10 @@ export class SubscriptionService {
   }
 
   /**
-   * Mandate failed its retry cycle — downgrade the user immediately.
-   * Two writes (Subscription status + User tier) wrapped in one
-   * transaction so a mid-sequence crash can't leave a halted
-   * subscription paired with an un-downgraded user.
+   * Mandate failed its retry cycle — downgrade the user immediately
+   * (Phase 11.3: end the matching tier-entry's grace by setting
+   * its expiresAt=now, mark CANCELLED, and let the next sweep $pull
+   * it. Other tier entries are untouched).
    */
   async onHalted(payload: RazorpaySubPayload): Promise<void> {
     const entity = payload.subscription.entity;
@@ -436,10 +450,11 @@ export class SubscriptionService {
     try {
       await session.withTransaction(async () => {
         await this.subRepo.updateOne({ _id: sub._id }, { $set: { status: 'HALTED' } }, { session });
-        await this.userRepo.updateOne(
-          { _id: sub.userId },
-          { $set: { tier: 'PUBLIC', tierExpiresAt: now } },
-          { session },
+        await this.markEntryExpiredImmediatelyBySubIdAndDeriveTier(
+          sub.userId,
+          sub._id,
+          now,
+          session,
         );
       });
     } finally {
@@ -449,10 +464,16 @@ export class SubscriptionService {
 
   /**
    * Cancellation. Razorpay sends `cancel_at_cycle_end` in the
-   * entity's notes. atCycleEnd=true → user.tier persists to
-   * tierExpiresAt (already set by prior `charged`). atCycleEnd=false
-   * → downgrade immediately. Both writes (Subscription status + User
-   * tier, when applicable) in one transaction.
+   * entity's notes.
+   *
+   * Phase 11.3: writes target the matching `User.subscriptions[]`
+   * entry by `subscriptionId`, NOT by tier. A late cancellation for
+   * a subscription that's already been replaced (R2 race) becomes a
+   * no-op naturally — the $map finds no matching subId.
+   *
+   * atCycleEnd=true  → mark entry CANCELLED, keep expiresAt (grace).
+   * atCycleEnd=false → mark entry CANCELLED + expiresAt=now (sweep
+   *                    removes next pass).
    */
   async onCancelled(payload: RazorpaySubPayload): Promise<void> {
     const entity = payload.subscription.entity;
@@ -471,11 +492,14 @@ export class SubscriptionService {
           { $set: { status: 'CANCELLED', cancelledAt: now } },
           { session },
         );
-        if (!atCycleEnd) {
-          await this.userRepo.updateOne(
-            { _id: sub.userId },
-            { $set: { tier: 'PUBLIC', tierExpiresAt: now } },
-            { session },
+        if (atCycleEnd) {
+          await this.markEntryCancelledBySubIdAndDeriveTier(sub.userId, sub._id, session);
+        } else {
+          await this.markEntryExpiredImmediatelyBySubIdAndDeriveTier(
+            sub.userId,
+            sub._id,
+            now,
+            session,
           );
         }
       });
@@ -491,5 +515,159 @@ export class SubscriptionService {
     status: SubscriptionAttrs['status'],
   ): Promise<void> {
     await SubscriptionModel.updateOne({ razorpaySubscriptionId: entity.id }, { $set: { status } });
+  }
+
+  /**
+   * Phase 11.3 — atomic upsert of a `subscriptions[]` entry keyed by
+   * `tier`. Pipeline filters out any existing entry of the same
+   * tier (replacement semantics — re-subscribe-after-cancellation
+   * with a different subId replaces the old entry, R5 race), then
+   * pushes the new entry, then derives `tier` + `tierExpiresAt`.
+   *
+   * Single pipeline update — atomic at document level. Two
+   * concurrent activations for different tiers (R1) serialize
+   * naturally; each filters its own tier and pushes its own entry.
+   * Idempotent on replay (R4): re-running with the same
+   * (tier, subscriptionId) produces identical state.
+   */
+  private async upsertSubscriptionEntryAndDeriveTier(
+    userId: Types.ObjectId,
+    tier: SubscribableTier,
+    status: 'ACTIVE' | 'CANCELLED',
+    expiresAt: Date | undefined,
+    subscriptionId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<void> {
+    const newEntry: Record<string, unknown> = {
+      tier,
+      status,
+      subscriptionId,
+    };
+    if (expiresAt) newEntry['expiresAt'] = expiresAt;
+
+    await UserModel.updateOne(
+      { _id: userId },
+      [
+        {
+          $set: {
+            subscriptions: {
+              $concatArrays: [
+                {
+                  $filter: {
+                    input: { $ifNull: ['$subscriptions', []] },
+                    as: 'this',
+                    cond: { $ne: ['$$this.tier', tier] },
+                  },
+                },
+                [newEntry],
+              ],
+            },
+          },
+        },
+        {
+          $set: {
+            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: this.clock() } }),
+            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
+              nowRef: { $literal: this.clock() },
+            }),
+          },
+        },
+      ],
+      { session },
+    );
+  }
+
+  /**
+   * Phase 11.3 — mark the entry whose `subscriptionId` matches as
+   * CANCELLED, preserving `expiresAt` (grace period). Pipeline
+   * `$map`-runs over subscriptions[] flipping status only on the
+   * matching entry. Late cancellation for a replaced subId (R2 race)
+   * becomes a no-op since no entry matches the input subId.
+   */
+  private async markEntryCancelledBySubIdAndDeriveTier(
+    userId: Types.ObjectId,
+    subscriptionId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<void> {
+    await UserModel.updateOne(
+      { _id: userId },
+      [
+        {
+          $set: {
+            subscriptions: {
+              $map: {
+                input: { $ifNull: ['$subscriptions', []] },
+                as: 'this',
+                in: {
+                  $cond: {
+                    if: { $eq: ['$$this.subscriptionId', subscriptionId] },
+                    then: { $mergeObjects: ['$$this', { status: 'CANCELLED' }] },
+                    else: '$$this',
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          $set: {
+            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: this.clock() } }),
+            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
+              nowRef: { $literal: this.clock() },
+            }),
+          },
+        },
+      ],
+      { session },
+    );
+  }
+
+  /**
+   * Phase 11.3 — immediate-expiry variant of cancellation: marks the
+   * matching entry CANCELLED AND sets its `expiresAt` to `now`. The
+   * next sweep pass $pulls the entry; the derivation here treats it
+   * as already-non-active (CANCELLED with expiresAt <= now per the
+   * canonical rule). Used by `onHalted` and by `onCancelled` with
+   * `atCycleEnd=false`.
+   */
+  private async markEntryExpiredImmediatelyBySubIdAndDeriveTier(
+    userId: Types.ObjectId,
+    subscriptionId: Types.ObjectId,
+    now: Date,
+    session: ClientSession,
+  ): Promise<void> {
+    await UserModel.updateOne(
+      { _id: userId },
+      [
+        {
+          $set: {
+            subscriptions: {
+              $map: {
+                input: { $ifNull: ['$subscriptions', []] },
+                as: 'this',
+                in: {
+                  $cond: {
+                    if: { $eq: ['$$this.subscriptionId', subscriptionId] },
+                    then: {
+                      $mergeObjects: ['$$this', { status: 'CANCELLED', expiresAt: now }],
+                    },
+                    else: '$$this',
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          $set: {
+            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: this.clock() } }),
+            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
+              nowRef: { $literal: this.clock() },
+            }),
+          },
+        },
+      ],
+      { session },
+    );
   }
 }

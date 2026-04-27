@@ -17,7 +17,6 @@ import { MODELS } from '../../shared/models/index.js';
 import { SubscriptionModel } from '../../shared/models/Subscription.model.js';
 import { SubscriptionPaymentModel } from '../../shared/models/SubscriptionPayment.model.js';
 import { UserModel, type UserAttrs, type UserDoc } from '../../shared/models/User.model.js';
-import { UserRepository } from '../../shared/repositories/User.repository.js';
 import { SubscriptionService, type Tier } from './subscriptions.service.js';
 
 type AnyModel = { syncIndexes(): Promise<string[]> };
@@ -218,13 +217,8 @@ describe('SubscriptionService.cancel', () => {
   });
 });
 
-describe('SubscriptionService webhook: subscription.charged', () => {
-  it('creates SubscriptionPayment, increments paidCount, upgrades tier, sets tierExpiresAt, enqueues invoice job', async () => {
-    // Phase 7: invoice generation is async. onCharged enqueues a
-    // BullMQ job instead of running the PDF/S3/SES pipeline inline.
-    // The payment row does NOT have invoiceNumber/invoicePdfUrl
-    // immediately after onCharged — the worker populates those
-    // fields. Test asserts tier + payment + counter + enqueue shape.
+describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () => {
+  it('creates SubscriptionPayment, increments paidCount, pushes subscriptions[] entry, derives tier, enqueues invoice', async () => {
     const { svc, enqueueSpy } = mkSvc();
     const user = await mkUser({ tier: 'PUBLIC' });
     const sub = await seedSubscription(user._id, 'PRO', {
@@ -259,7 +253,6 @@ describe('SubscriptionService webhook: subscription.charged', () => {
     expect(payment).toBeTruthy();
     expect(payment?.amount).toBe(5900);
     expect(payment?.status).toBe('CAPTURED');
-    // Invoice fields are NOT populated by onCharged — worker does that.
     expect(payment?.invoiceNumber).toBeUndefined();
     expect(payment?.invoicePdfUrl).toBeUndefined();
 
@@ -268,31 +261,39 @@ describe('SubscriptionService webhook: subscription.charged', () => {
     expect(afterSub?.status).toBe('ACTIVE');
 
     const afterUser = await UserModel.findById(user._id);
+    // Phase 11.3: subscriptions[] entry pushed.
+    expect(afterUser?.subscriptions).toHaveLength(1);
+    expect(afterUser?.subscriptions[0]).toMatchObject({
+      tier: 'PRO',
+      status: 'ACTIVE',
+    });
+    expect(String(afterUser?.subscriptions[0]?.subscriptionId)).toBe(String(sub._id));
+    expect(afterUser?.subscriptions[0]?.expiresAt?.toISOString()).toBe(
+      new Date(currentEndSec * 1000).toISOString(),
+    );
+    // Legacy denormalized fields kept in sync via derivation.
     expect(afterUser?.tier).toBe('PRO');
     expect(afterUser?.tierExpiresAt?.toISOString()).toBe(
       new Date(currentEndSec * 1000).toISOString(),
     );
 
-    // enqueueInvoice called once with the new payment's _id
-    // stringified (BullMQ JSON-serializes data; ObjectIds don't
-    // round-trip, so the helper must stringify at the boundary).
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     const [arg] = enqueueSpy.mock.calls[0] ?? [];
     expect(arg).toEqual({ paymentId: String(payment?._id) });
   });
 
-  it('rolls back cleanly when user update fails mid-transaction (no payment row, no paidCount bump, tier unchanged)', async () => {
+  it('rolls back cleanly when user update fails mid-transaction (no payment row, no paidCount bump, subscriptions[] unchanged)', async () => {
     const { svc, enqueueSpy } = mkSvc();
     const user = await mkUser({ tier: 'PUBLIC' });
     const sub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_rb_1',
     });
 
-    // Force the user-update step to throw on first call. The
-    // transaction must abort and roll back the SubscriptionPayment
-    // insert + Subscription status/paidCount update.
+    // Phase 11.3: User update is now a pipeline call on UserModel
+    // directly (not via UserRepository), so the spy targets the
+    // mongoose method.
     const spy = vi
-      .spyOn(UserRepository.prototype, 'updateOne')
+      .spyOn(UserModel, 'updateOne')
       .mockRejectedValueOnce(new Error('simulated user update failure'));
 
     await expect(
@@ -315,87 +316,349 @@ describe('SubscriptionService webhook: subscription.charged', () => {
       }),
     ).rejects.toThrow(/simulated user update failure/);
 
-    // No SubscriptionPayment row was committed.
     expect(await SubscriptionPaymentModel.countDocuments({ razorpayPaymentId: 'pay_rb_1' })).toBe(
       0,
     );
 
-    // Subscription paidCount + status unchanged.
     const subAfter = await SubscriptionModel.findById(sub._id);
-    expect(subAfter?.paidCount).toBe(1); // seed value
-    expect(subAfter?.status).toBe('ACTIVE'); // seed value
+    expect(subAfter?.paidCount).toBe(1);
+    expect(subAfter?.status).toBe('ACTIVE');
 
-    // User tier unchanged.
     const userAfter = await UserModel.findById(user._id);
     expect(userAfter?.tier).toBe('PUBLIC');
-    expect(userAfter?.tierExpiresAt).toBeUndefined();
+    expect(userAfter?.subscriptions ?? []).toEqual([]);
 
-    // Enqueue never called — we aborted before the post-transaction
-    // side-effect window.
     expect(enqueueSpy).not.toHaveBeenCalled();
-
     spy.mockRestore();
+  });
+
+  // Phase 11.3 — stacking + replacement + race specs
+
+  it('stackable activation: PRO already active, onCharged for PRO_MAX → 2 entries, derived tier PRO_MAX', async () => {
+    const { svc } = mkSvc();
+    const user = await mkUser({ tier: 'PRO' });
+    const proSub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_stack_pro',
+    });
+    const proExpiresAt = new Date('2026-05-23T00:00:00Z');
+    // Pre-populate PRO entry to simulate prior charged event.
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          subscriptions: [
+            {
+              tier: 'PRO',
+              status: 'ACTIVE',
+              expiresAt: proExpiresAt,
+              subscriptionId: proSub._id,
+            },
+          ],
+          tierExpiresAt: proExpiresAt,
+        },
+      },
+    );
+    const proMaxSub = await seedSubscription(user._id, 'PRO_MAX', {
+      razorpaySubscriptionId: 'sub_stack_pmax',
+    });
+    const proMaxEndSec = Math.floor(new Date('2026-06-30T00:00:00Z').getTime() / 1000);
+
+    await svc.onCharged({
+      subscription: {
+        entity: { id: 'sub_stack_pmax', status: 'active', current_end: proMaxEndSec },
+      },
+      payment: { entity: { id: 'pay_stack_pmax', amount: 11800, status: 'captured' } },
+    });
+
+    const after = await UserModel.findById(user._id);
+    expect(after?.subscriptions).toHaveLength(2);
+    const tiers = after?.subscriptions.map((s) => s.tier).sort();
+    expect(tiers).toEqual(['PRO', 'PRO_MAX']);
+    // Derivation: PRO_MAX wins, expiresAt = PRO_MAX expiry.
+    expect(after?.tier).toBe('PRO_MAX');
+    expect(after?.tierExpiresAt?.toISOString()).toBe(new Date(proMaxEndSec * 1000).toISOString());
+    // Confirm subscriptionId on PRO_MAX entry:
+    const proMaxEntry = after?.subscriptions.find((s) => s.tier === 'PRO_MAX');
+    expect(String(proMaxEntry?.subscriptionId)).toBe(String(proMaxSub._id));
+  });
+
+  it('replacement-by-tier: re-subscribe PRO with different subId → entry replaced (not duplicated)', async () => {
+    const { svc } = mkSvc();
+    const user = await mkUser({ tier: 'PRO' });
+    const oldSub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_old_pro',
+    });
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          subscriptions: [
+            {
+              tier: 'PRO',
+              status: 'CANCELLED',
+              expiresAt: new Date('2026-04-30T00:00:00Z'),
+              subscriptionId: oldSub._id,
+            },
+          ],
+        },
+      },
+    );
+
+    const newSub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_new_pro',
+    });
+    const newEndSec = Math.floor(new Date('2026-06-30T00:00:00Z').getTime() / 1000);
+
+    await svc.onCharged({
+      subscription: { entity: { id: 'sub_new_pro', status: 'active', current_end: newEndSec } },
+      payment: { entity: { id: 'pay_new_pro', amount: 5900, status: 'captured' } },
+    });
+
+    const after = await UserModel.findById(user._id);
+    // Still ONE PRO entry, not two.
+    expect(after?.subscriptions).toHaveLength(1);
+    expect(after?.subscriptions[0]?.tier).toBe('PRO');
+    expect(after?.subscriptions[0]?.status).toBe('ACTIVE');
+    // The new subId replaced the old.
+    expect(String(after?.subscriptions[0]?.subscriptionId)).toBe(String(newSub._id));
+    expect(String(after?.subscriptions[0]?.subscriptionId)).not.toBe(String(oldSub._id));
+  });
+
+  it('idempotent replay: same charged event delivered twice → single payment row, single entry', async () => {
+    const { svc, enqueueSpy } = mkSvc();
+    const user = await mkUser({ tier: 'PUBLIC' });
+    await seedSubscription(user._id, 'PRO', { razorpaySubscriptionId: 'sub_idem_1' });
+
+    const payload = {
+      subscription: {
+        entity: {
+          id: 'sub_idem_1',
+          status: 'active',
+          current_end: Math.floor(new Date('2026-05-23T00:00:00Z').getTime() / 1000),
+        },
+      },
+      payment: { entity: { id: 'pay_idem_1', amount: 5900, status: 'captured' } },
+    };
+
+    await svc.onCharged(payload);
+    await svc.onCharged(payload);
+
+    expect(await SubscriptionPaymentModel.countDocuments({ razorpayPaymentId: 'pay_idem_1' })).toBe(
+      1,
+    );
+    const after = await UserModel.findById(user._id);
+    expect(after?.subscriptions).toHaveLength(1);
+    expect(after?.tier).toBe('PRO');
+    // First call enqueued; the second is a no-op (upsert match path
+    // returns null pre-enqueue).
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('SubscriptionService webhook: subscription.halted', () => {
-  it('downgrades user to PUBLIC immediately and sets tierExpiresAt to now', async () => {
+describe('SubscriptionService webhook: subscription.halted (Phase 11.3)', () => {
+  it('marks the matching tier-entry CANCELLED + expiresAt=now; other tiers untouched; derivation downgrades', async () => {
     const fixedNow = new Date('2026-04-23T10:00:00Z');
     const { svc } = mkSvc({ clock: () => fixedNow });
-    const user = await mkUser({ tier: 'PRO', tierExpiresAt: new Date('2026-05-23T00:00:00Z') });
-    await seedSubscription(user._id, 'PRO', { razorpaySubscriptionId: 'sub_halt_1' });
+    const user = await mkUser({ tier: 'PRO_MAX', tierExpiresAt: new Date('2026-06-30T00:00:00Z') });
+    const proSub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_halt_pro',
+    });
+    const proMaxSub = await seedSubscription(user._id, 'PRO_MAX', {
+      razorpaySubscriptionId: 'sub_halt_pmax',
+    });
+    // Both entries seeded as ACTIVE.
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          subscriptions: [
+            {
+              tier: 'PRO',
+              status: 'ACTIVE',
+              expiresAt: new Date('2026-05-23T00:00:00Z'),
+              subscriptionId: proSub._id,
+            },
+            {
+              tier: 'PRO_MAX',
+              status: 'ACTIVE',
+              expiresAt: new Date('2026-06-30T00:00:00Z'),
+              subscriptionId: proMaxSub._id,
+            },
+          ],
+        },
+      },
+    );
 
-    await svc.onHalted({ subscription: { entity: { id: 'sub_halt_1' } } });
+    await svc.onHalted({ subscription: { entity: { id: 'sub_halt_pro' } } });
+
+    const after = await UserModel.findById(user._id);
+    const proEntry = after?.subscriptions.find((s) => s.tier === 'PRO');
+    const proMaxEntry = after?.subscriptions.find((s) => s.tier === 'PRO_MAX');
+    expect(proEntry?.status).toBe('CANCELLED');
+    expect(proEntry?.expiresAt?.toISOString()).toBe(fixedNow.toISOString());
+    // PRO_MAX entry must be entirely untouched.
+    expect(proMaxEntry?.status).toBe('ACTIVE');
+    expect(proMaxEntry?.expiresAt?.toISOString()).toBe('2026-06-30T00:00:00.000Z');
+    // Derivation: PRO_MAX still wins (PRO is now CANCELLED-expired).
+    expect(after?.tier).toBe('PRO_MAX');
+    expect(after?.tierExpiresAt?.toISOString()).toBe('2026-06-30T00:00:00.000Z');
+  });
+
+  it('only-tier user halted → derivation drops to PUBLIC, tierExpiresAt=null', async () => {
+    const fixedNow = new Date('2026-04-23T10:00:00Z');
+    const { svc } = mkSvc({ clock: () => fixedNow });
+    const user = await mkUser({ tier: 'PRO' });
+    const proSub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_halt_solo',
+    });
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          subscriptions: [
+            {
+              tier: 'PRO',
+              status: 'ACTIVE',
+              expiresAt: new Date('2026-05-23T00:00:00Z'),
+              subscriptionId: proSub._id,
+            },
+          ],
+        },
+      },
+    );
+
+    await svc.onHalted({ subscription: { entity: { id: 'sub_halt_solo' } } });
 
     const after = await UserModel.findById(user._id);
     expect(after?.tier).toBe('PUBLIC');
-    expect(after?.tierExpiresAt?.toISOString()).toBe(fixedNow.toISOString());
+    expect(after?.tierExpiresAt ?? null).toBeNull();
+    // Entry stays in array (CANCELLED + expiresAt=now). Sweep removes
+    // it on next pass; derivation already excludes it.
+    expect(after?.subscriptions).toHaveLength(1);
+    expect(after?.subscriptions[0]?.status).toBe('CANCELLED');
+    expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(fixedNow.toISOString());
   });
 });
 
-describe('SubscriptionService webhook: subscription.cancelled', () => {
-  it('cancel_at_cycle_end=1 → user tier + tierExpiresAt unchanged (persists to cycle end)', async () => {
+describe('SubscriptionService webhook: subscription.cancelled (Phase 11.3)', () => {
+  it('cancel_at_cycle_end=1 → entry status=CANCELLED, expiresAt unchanged (grace), derivation still PRO', async () => {
     const { svc } = mkSvc();
     const originalExpiry = new Date('2026-05-23T00:00:00Z');
     const user = await mkUser({ tier: 'PRO', tierExpiresAt: originalExpiry });
-    await seedSubscription(user._id, 'PRO', { razorpaySubscriptionId: 'sub_cx_end_1' });
-
-    await svc.onCancelled({
-      subscription: {
-        entity: {
-          id: 'sub_cx_end_1',
-          notes: { cancel_at_cycle_end: 1 },
+    const sub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_cx_end_1',
+    });
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          subscriptions: [
+            {
+              tier: 'PRO',
+              status: 'ACTIVE',
+              expiresAt: originalExpiry,
+              subscriptionId: sub._id,
+            },
+          ],
         },
       },
+    );
+
+    await svc.onCancelled({
+      subscription: { entity: { id: 'sub_cx_end_1', notes: { cancel_at_cycle_end: 1 } } },
     });
 
     const after = await UserModel.findById(user._id);
+    expect(after?.subscriptions).toHaveLength(1);
+    expect(after?.subscriptions[0]?.status).toBe('CANCELLED');
+    expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(originalExpiry.toISOString());
+    // CANCELLED + future expiresAt → still PRO via grace.
     expect(after?.tier).toBe('PRO');
     expect(after?.tierExpiresAt?.toISOString()).toBe(originalExpiry.toISOString());
 
-    const sub = await SubscriptionModel.findOne({ razorpaySubscriptionId: 'sub_cx_end_1' });
-    expect(sub?.status).toBe('CANCELLED');
-    expect(sub?.cancelledAt).toBeInstanceOf(Date);
+    const subAfter = await SubscriptionModel.findOne({ razorpaySubscriptionId: 'sub_cx_end_1' });
+    expect(subAfter?.status).toBe('CANCELLED');
+    expect(subAfter?.cancelledAt).toBeInstanceOf(Date);
   });
 
-  it('cancel_at_cycle_end=0 → user downgraded to PUBLIC immediately with tierExpiresAt=now', async () => {
+  it('cancel_at_cycle_end=0 → entry CANCELLED + expiresAt=now, derivation drops to PUBLIC', async () => {
     const fixedNow = new Date('2026-04-23T10:00:00Z');
     const { svc } = mkSvc({ clock: () => fixedNow });
     const user = await mkUser({ tier: 'PRO', tierExpiresAt: new Date('2026-05-23T00:00:00Z') });
-    await seedSubscription(user._id, 'PRO', { razorpaySubscriptionId: 'sub_cx_now_1' });
-
-    await svc.onCancelled({
-      subscription: {
-        entity: {
-          id: 'sub_cx_now_1',
-          notes: { cancel_at_cycle_end: 0 },
+    const sub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_cx_now_1',
+    });
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          subscriptions: [
+            {
+              tier: 'PRO',
+              status: 'ACTIVE',
+              expiresAt: new Date('2026-05-23T00:00:00Z'),
+              subscriptionId: sub._id,
+            },
+          ],
         },
       },
+    );
+
+    await svc.onCancelled({
+      subscription: { entity: { id: 'sub_cx_now_1', notes: { cancel_at_cycle_end: 0 } } },
     });
 
     const after = await UserModel.findById(user._id);
+    expect(after?.subscriptions[0]?.status).toBe('CANCELLED');
+    expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(fixedNow.toISOString());
+    // Derivation: CANCELLED + expiresAt == now → not active (rule:
+    // CANCELLED counts only if expiresAt > now). So PUBLIC.
     expect(after?.tier).toBe('PUBLIC');
-    expect(after?.tierExpiresAt?.toISOString()).toBe(fixedNow.toISOString());
+    expect(after?.tierExpiresAt ?? null).toBeNull();
+  });
+
+  // Phase 11.3 R2 — late cancellation for replaced subId is a no-op.
+  it('R2 race: late cancellation for an old subId after replacement → no-op (newer entry survives)', async () => {
+    const { svc } = mkSvc();
+    const user = await mkUser({ tier: 'PRO' });
+    const oldSub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_old',
+    });
+    const newSub = await seedSubscription(user._id, 'PRO', {
+      razorpaySubscriptionId: 'sub_new',
+    });
+    // Subscriptions[] currently holds the NEW subId (post-replacement).
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          subscriptions: [
+            {
+              tier: 'PRO',
+              status: 'ACTIVE',
+              expiresAt: new Date('2027-01-01T00:00:00Z'),
+              subscriptionId: newSub._id,
+            },
+          ],
+        },
+      },
+    );
+
+    // Late cancellation arrives for the OLD subscription.
+    await svc.onCancelled({
+      subscription: { entity: { id: 'sub_old', notes: { cancel_at_cycle_end: 1 } } },
+    });
+
+    const after = await UserModel.findById(user._id);
+    // The NEW subscription's entry must be UNTOUCHED.
+    expect(after?.subscriptions).toHaveLength(1);
+    expect(after?.subscriptions[0]?.status).toBe('ACTIVE');
+    expect(String(after?.subscriptions[0]?.subscriptionId)).toBe(String(newSub._id));
+    // Subscription doc for old subId IS marked CANCELLED (it's still
+    // a real Subscription row; only the User's array entry is
+    // protected from late cancellation).
+    const oldAfter = await SubscriptionModel.findById(oldSub._id);
+    expect(oldAfter?.status).toBe('CANCELLED');
   });
 });
 
