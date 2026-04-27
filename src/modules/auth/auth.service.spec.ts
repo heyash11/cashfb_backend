@@ -89,6 +89,49 @@ beforeEach(async () => {
   await clearAllCollections();
 });
 
+// ---- Phase 11.6 — verify-response shape lock-in ----
+
+describe('AuthService.verifySignupOtp / verifyLoginOtp — Phase 11.6 minimal shape lock-in', () => {
+  it('signup verify response carries only {id, phone, coinBalance, displayName?} — no tier-derived fields', async () => {
+    const otp = new MockOtpService();
+    const svc = new AuthService({ otpService: otp });
+    const result = await svc.verifySignupOtp(signupInput());
+
+    // Path B: /me is the canonical source for tier-derived UI.
+    // Auth verify must NOT surface any of these or Flutter ends
+    // up with two truth sources for the same UI state.
+    expect(result.user).not.toHaveProperty('tier');
+    expect(result.user).not.toHaveProperty('tierExpiresAt');
+    expect(result.user).not.toHaveProperty('subscription');
+    expect(result.user).not.toHaveProperty('subscriptions');
+    expect(result.user).not.toHaveProperty('currentTier');
+    expect(result.user).not.toHaveProperty('kyc');
+
+    // Required positive fields:
+    expect(typeof result.user.id).toBe('string');
+    expect(result.user.phone).toBe('+919000000001');
+    expect(typeof result.user.coinBalance).toBe('number');
+  });
+
+  it('login verify response carries only {id, phone, coinBalance, displayName?} — no tier-derived fields', async () => {
+    const otp = new MockOtpService();
+    const svc = new AuthService({ otpService: otp });
+    await svc.verifySignupOtp(signupInput());
+
+    const login = await svc.verifyLoginOtp(loginInput());
+    expect(login.user).not.toHaveProperty('tier');
+    expect(login.user).not.toHaveProperty('tierExpiresAt');
+    expect(login.user).not.toHaveProperty('subscription');
+    expect(login.user).not.toHaveProperty('subscriptions');
+    expect(login.user).not.toHaveProperty('currentTier');
+    expect(login.user).not.toHaveProperty('kyc');
+
+    expect(typeof login.user.id).toBe('string');
+    expect(login.user.phone).toBe('+919000000001');
+    expect(typeof login.user.coinBalance).toBe('number');
+  });
+});
+
 // ---- Signup ----
 
 describe('AuthService.verifySignupOtp — happy path', () => {

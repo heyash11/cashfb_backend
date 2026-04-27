@@ -54,6 +54,7 @@ import { createPostsRouter } from './modules/posts/index.js';
 import { PostService } from './modules/posts/posts.service.js';
 import { AdminPostService } from './modules/posts/posts.admin.service.js';
 import { PrizePoolService } from './modules/prize-pools/prize-pools.service.js';
+import { createPrizePoolsRouter } from './modules/prize-pools/prize-pools.routes.js';
 import { createRedeemCodesRouter } from './modules/redeem-codes/index.js';
 import { RedeemCodeService } from './modules/redeem-codes/redeem-codes.service.js';
 import { AdminRedeemCodeService } from './modules/redeem-codes/redeem-codes.admin.service.js';
@@ -145,6 +146,10 @@ export function createApp(): Express {
   const postService = new PostService({ coinEvents });
   const redeemCodeService = new RedeemCodeService();
   const customRoomsService = new CustomRoomsService();
+  // Phase 11.6 — PrizePoolService instance is shared between the
+  // public-facing /api/v1/prize-pools/today read endpoint and the
+  // admin manual-trigger endpoint mounted under /api/v1/admin/prize-pools.
+  const prizePoolCoreService = new PrizePoolService();
   app.use('/api/v1/auth', createAuthRouter(authService));
   app.use('/api/v1', createUsersRouter(userCoinsService, userProfileService));
   app.use('/api/v1', createVotesRouter(voteService));
@@ -153,6 +158,7 @@ export function createApp(): Express {
   app.use('/api/v1', createDonationsRouter(donationService));
   app.use('/api/v1', createSubscriptionsRouter(subscriptionService));
   app.use('/api/v1', createCustomRoomsRouter(customRoomsService));
+  app.use('/api/v1', createPrizePoolsRouter(prizePoolCoreService));
 
   // Admin auth surface. Middleware chain order (enforced per-route):
   //   rate-limit → ipAllowlist → adminSession → csrfCheck → requireRole → auditLog → handler
@@ -185,7 +191,6 @@ export function createApp(): Express {
   // a 60s TTL (no active invalidation).
   const adminUsersService = new AdminUsersService();
   const adminPrizePoolsService = new AdminPrizePoolsService();
-  const prizePoolCoreService = new PrizePoolService();
   const adminDashboardService = new AdminDashboardService();
   const adminDlqService = new AdminDlqService();
   app.use('/api/v1/admin/users', createAdminUsersRouter(adminUsersService));

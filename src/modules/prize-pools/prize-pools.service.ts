@@ -8,6 +8,7 @@ import { VoteModel } from '../../shared/models/Vote.model.js';
 import type { Tier } from '../../shared/models/_tier.js';
 import { AppConfigRepository } from '../../shared/repositories/AppConfig.repository.js';
 import { PrizePoolRepository } from '../../shared/repositories/PrizePool.repository.js';
+import { dayKeyIst, nowIst } from '../../shared/utils/date.js';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -37,6 +38,45 @@ export interface ComputeAndPublishResult {
   totalPoolPaise: number;
   giftCodeBudgetPaise: number;
   customRoomBudgetPaise: number;
+}
+
+/**
+ * Phase 11.6 — public read shape for `GET /api/v1/prize-pools/today`.
+ *
+ * `voteCount` is the COUNT OF VOTES THAT FUNDED THIS POOL — i.e.
+ * yesterday's votes for this tier, since pools are computed from
+ * yesterday's data on the daily IST 00:05 cron. This is NOT the
+ * count of today's in-progress votes; that lives on
+ * `/votes/today.totalVotesToday` (the home-screen "Total: 47"
+ * counter).
+ *
+ * `status: 'PENDING'` is the read-side projection of "no
+ * prize_pools row exists for (tier, today's dayKey) yet". Two
+ * scenarios produce it:
+ *   1. The IST 00:00–00:05 window before today's cron fires.
+ *   2. A fresh deploy or test environment where the cron has
+ *      never run.
+ * In either case all numeric fields are 0 and `calculatedAt` is
+ * null. Flutter renders "Calculating today's pool..." on this
+ * state instead of an error.
+ *
+ * `calculatedAt` is the persisted PrizePool.calculatedAt timestamp
+ * (Phase 11.6 R1 — no `computedAt` alias on the wire).
+ */
+export interface TodayPoolResult {
+  tier: Tier;
+  dayKey: string;
+  /** Count of votes that funded this pool (from yesterday's dayKey). */
+  voteCount: number;
+  tierMultiplier: number;
+  baseRatePaise: number;
+  voteContributionPaise: number;
+  donationContributionPaise: number;
+  totalPoolPaise: number;
+  giftCodeBudgetPaise: number;
+  customRoomBudgetPaise: number;
+  status: 'PENDING' | 'CALCULATED' | 'PUBLISHED' | 'CLOSED';
+  calculatedAt: Date | null;
 }
 
 export interface PrizePoolServiceDeps {
@@ -199,6 +239,61 @@ export class PrizePoolService {
       totalPoolPaise: prev.totalPool,
       giftCodeBudgetPaise: prev.giftCodeBudget ?? 0,
       customRoomBudgetPaise: prev.customRoomBudget ?? 0,
+    };
+  }
+
+  /**
+   * Phase 11.6 — read-side fetch for the public-facing
+   * `GET /prize-pools/today` endpoint. Returns either the persisted
+   * row's values (status mirrored from PrizePool.status) or a
+   * PENDING projection with all numerics zeroed when no row exists
+   * yet for (tier, today's IST dayKey).
+   *
+   * Derivations mirror the service's internal `computeAndPublishPool`
+   * re-fire path: vote contribution is reconstructed from the
+   * stored multiplier so historical pools remain auditable even if
+   * AppConfig multipliers change later. Donation contribution is
+   * the residue (totalPool − voteContribution).
+   */
+  async getTodayForTier(tier: Tier): Promise<TodayPoolResult> {
+    const dayKey = dayKeyIst(nowIst());
+    const row = await this.prizePoolRepo.findByTierDayKey(tier, dayKey);
+
+    if (!row) {
+      return {
+        tier,
+        dayKey,
+        voteCount: 0,
+        tierMultiplier: 0,
+        baseRatePaise: 0,
+        voteContributionPaise: 0,
+        donationContributionPaise: 0,
+        totalPoolPaise: 0,
+        giftCodeBudgetPaise: 0,
+        customRoomBudgetPaise: 0,
+        status: 'PENDING',
+        calculatedAt: null,
+      };
+    }
+
+    const tierMultiplier =
+      row.tier === 'PRO' ? row.proMultiplier : row.tier === 'PRO_MAX' ? row.proMaxMultiplier : 1;
+    const voteContributionPaise = row.yesterdayVoteCount * row.baseRate * tierMultiplier;
+    const donationContributionPaise = row.totalPool - voteContributionPaise;
+
+    return {
+      tier: row.tier,
+      dayKey: row.dayKey,
+      voteCount: row.yesterdayVoteCount,
+      tierMultiplier,
+      baseRatePaise: row.baseRate,
+      voteContributionPaise,
+      donationContributionPaise,
+      totalPoolPaise: row.totalPool,
+      giftCodeBudgetPaise: row.giftCodeBudget ?? 0,
+      customRoomBudgetPaise: row.customRoomBudget ?? 0,
+      status: row.status,
+      calculatedAt: row.calculatedAt ?? null,
     };
   }
 

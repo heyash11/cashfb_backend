@@ -10,6 +10,14 @@ const ObjectIdHex = z
 /**
  * Phase 11.4 — `tier` is REQUIRED. Each tier tab is a separate
  * fetch; missing tier → 400 ValidationError.
+ *
+ * `game` enum values:
+ *   - `BGMI` — Battlegrounds Mobile India
+ *   - `FF`   — Free Fire (abbreviated; canonical wire form)
+ *
+ * `dayKey` is the canonical query-string parameter name (NOT
+ * `date`) — same `YYYY-MM-DD` IST format used everywhere else in
+ * the codebase (votes, prize_pools).
  */
 export const ListRoomsQuerySchema = z
   .object({

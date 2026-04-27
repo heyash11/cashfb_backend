@@ -7,6 +7,7 @@ import {
   UnauthorizedError,
 } from '../../shared/errors/AppError.js';
 import type { CoinEventEmitter } from '../../shared/events/coinEvents.js';
+import { VoteModel } from '../../shared/models/Vote.model.js';
 import { userCanAccessTier, type Tier } from '../../shared/models/_tier.js';
 import { CoinTransactionRepository } from '../../shared/repositories/CoinTransaction.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
@@ -172,16 +173,39 @@ export class VoteService {
    * tier on today's dayKey, `canVote: true` otherwise. Per-tier
    * slots are independent — voting in PUBLIC doesn't affect PRO
    * eligibility, etc.
+   *
+   * Phase 11.6 augmentation:
+   *   - `votedAt: Date | null` — replaces the prior `usedAt?` field.
+   *     The user's createdAt for their vote in (tier, dayKey) if
+   *     present, else null. Always emitted (no key omission).
+   *   - `totalVotesToday: number` — count across ALL users for
+   *     (tier, dayKey). Drives the home-screen "Total: 47"
+   *     platform-wide engagement counter. Distinct from
+   *     `/prize-pools/today.voteCount` which counts YESTERDAY's
+   *     votes that funded this pool.
    */
   async getTodayStatus(
     userId: Types.ObjectId,
     tier: Tier = 'PUBLIC',
-  ): Promise<{ canVote: boolean; usedAt?: Date; dayKey: string; tier: Tier }> {
+  ): Promise<{
+    canVote: boolean;
+    dayKey: string;
+    tier: Tier;
+    votedAt: Date | null;
+    totalVotesToday: number;
+  }> {
     const dayKey = dayKeyIst(nowIst());
-    const vote = await this.voteRepo.findByUserDayTier(userId, tier, dayKey);
-    if (vote) {
-      return { canVote: false, usedAt: vote.createdAt, dayKey, tier };
-    }
-    return { canVote: true, dayKey, tier };
+    const [vote, totalVotesToday] = await Promise.all([
+      this.voteRepo.findByUserDayTier(userId, tier, dayKey),
+      VoteModel.countDocuments({ tier, dayKey }),
+    ]);
+
+    return {
+      canVote: vote === null,
+      dayKey,
+      tier,
+      votedAt: vote?.createdAt ?? null,
+      totalVotesToday,
+    };
   }
 }

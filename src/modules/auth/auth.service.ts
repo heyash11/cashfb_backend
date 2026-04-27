@@ -36,6 +36,21 @@ export interface AuthTokens {
   accessExpiresIn: number;
 }
 
+/**
+ * Phase 11.6 — minimal shape returned by `/auth/signup/verify` and
+ * `/auth/login/verify`. Locked at this set of fields:
+ *   - `id`, `phone`, `coinBalance`, `displayName?`
+ *
+ * No tier-derived fields here (no `tier`, no `tierExpiresAt`, no
+ * `subscription`, no `subscriptions`, no `currentTier`). Phase 11.5
+ * removed those; Path B says Flutter calls `GET /me` first thing
+ * after auth to hydrate the tier-aware UI from the canonical
+ * source. Adding any tier-derived field here would create two
+ * sources of truth for the same UI state.
+ *
+ * `kyc` is also intentionally absent — same reasoning. `/me`
+ * carries it.
+ */
 export interface AuthedUserDto {
   id: string;
   phone: string;

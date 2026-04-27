@@ -14,6 +14,7 @@ import { MODELS } from '../../shared/models/index.js';
 import { PrizePoolModel } from '../../shared/models/PrizePool.model.js';
 import { VoteModel } from '../../shared/models/Vote.model.js';
 import type { Tier } from '../../shared/models/_tier.js';
+import { dayKeyIst, nowIst } from '../../shared/utils/date.js';
 import { PrizePoolService } from './prize-pools.service.js';
 
 dayjs.extend(utc);
@@ -405,5 +406,114 @@ describe('PrizePoolService.computeAndPublishPool — per-tier (Phase 11.2)', () 
     expect(res.giftCodeBudgetPaise).toBe(700); // floor(0.7 × 1001)
     expect(res.customRoomBudgetPaise).toBe(301); // 1001 − 700
     expect(res.giftCodeBudgetPaise + res.customRoomBudgetPaise).toBe(res.totalPoolPaise);
+  });
+});
+
+// ---------------------------------------------------------------
+// Phase 11.6 — public read endpoint backing
+// ---------------------------------------------------------------
+
+describe('PrizePoolService.getTodayForTier — Phase 11.6 public read', () => {
+  it('returns persisted row values with status=CALCULATED for PUBLIC tier when pool exists', async () => {
+    const todayKey = dayKeyIst(nowIst());
+    const calculatedAt = new Date('2026-04-25T00:05:00Z');
+    await PrizePoolModel.create({
+      tier: 'PUBLIC',
+      dayKey: todayKey,
+      yesterdayVoteCount: 100,
+      baseRate: 100, // 1 INR / vote
+      totalPool: 12000, // 100 votes × 100 paise + 2000 donations
+      giftCodeBudget: 8400,
+      customRoomBudget: 3600,
+      proMultiplier: 5,
+      proMaxMultiplier: 10,
+      status: 'CALCULATED',
+      calculatedAt,
+    });
+
+    const svc = new PrizePoolService();
+    const res = await svc.getTodayForTier('PUBLIC');
+
+    expect(res).toEqual({
+      tier: 'PUBLIC',
+      dayKey: todayKey,
+      voteCount: 100,
+      tierMultiplier: 1,
+      baseRatePaise: 100,
+      voteContributionPaise: 10000, // 100 × 100 × 1
+      donationContributionPaise: 2000, // 12000 − 10000
+      totalPoolPaise: 12000,
+      giftCodeBudgetPaise: 8400,
+      customRoomBudgetPaise: 3600,
+      status: 'CALCULATED',
+      calculatedAt,
+    });
+  });
+
+  it('returns voteContribution × tierMultiplier=5 for PRO tier; donationContribution=0', async () => {
+    const todayKey = dayKeyIst(nowIst());
+    await PrizePoolModel.create({
+      tier: 'PRO',
+      dayKey: todayKey,
+      yesterdayVoteCount: 50,
+      baseRate: 100,
+      totalPool: 25000, // 50 × 100 × 5 (no donation contribution for PRO)
+      giftCodeBudget: 17500,
+      customRoomBudget: 7500,
+      proMultiplier: 5,
+      proMaxMultiplier: 10,
+      status: 'PUBLISHED',
+      calculatedAt: new Date('2026-04-25T00:05:00Z'),
+      publishedAt: new Date('2026-04-25T00:06:00Z'),
+    });
+
+    const svc = new PrizePoolService();
+    const res = await svc.getTodayForTier('PRO');
+
+    expect(res.tier).toBe('PRO');
+    expect(res.tierMultiplier).toBe(5);
+    expect(res.voteContributionPaise).toBe(25000); // 50 × 100 × 5
+    expect(res.donationContributionPaise).toBe(0); // PRO carries no donation share
+    expect(res.totalPoolPaise).toBe(25000);
+    expect(res.status).toBe('PUBLISHED');
+  });
+
+  it('returns PENDING projection with all numerics 0 + calculatedAt: null when no pool row exists', async () => {
+    // No insert — empty prize_pools collection.
+    const svc = new PrizePoolService();
+    const res = await svc.getTodayForTier('PUBLIC');
+
+    expect(res.status).toBe('PENDING');
+    expect(res.calculatedAt).toBeNull();
+    expect(res.voteCount).toBe(0);
+    expect(res.tierMultiplier).toBe(0);
+    expect(res.baseRatePaise).toBe(0);
+    expect(res.voteContributionPaise).toBe(0);
+    expect(res.donationContributionPaise).toBe(0);
+    expect(res.totalPoolPaise).toBe(0);
+    expect(res.giftCodeBudgetPaise).toBe(0);
+    expect(res.customRoomBudgetPaise).toBe(0);
+    expect(res.dayKey).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(res.tier).toBe('PUBLIC');
+  });
+
+  it('PENDING isolation: a PRO pool exists for today but caller asks for PUBLIC → still PENDING', async () => {
+    const todayKey = dayKeyIst(nowIst());
+    await PrizePoolModel.create({
+      tier: 'PRO',
+      dayKey: todayKey,
+      yesterdayVoteCount: 10,
+      baseRate: 100,
+      totalPool: 5000,
+      proMultiplier: 5,
+      proMaxMultiplier: 10,
+      status: 'CALCULATED',
+      calculatedAt: new Date(),
+    });
+
+    const svc = new PrizePoolService();
+    const res = await svc.getTodayForTier('PUBLIC');
+    expect(res.status).toBe('PENDING');
+    expect(res.tier).toBe('PUBLIC');
   });
 });

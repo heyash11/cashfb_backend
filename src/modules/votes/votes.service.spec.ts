@@ -406,7 +406,7 @@ describe('VoteService.castVote — day-key rollover', () => {
 // ---------------------------------------------------------------
 
 describe('VoteService.getTodayStatus', () => {
-  it('returns canVote: false with usedAt + dayKey when user voted today', async () => {
+  it('returns canVote: false with votedAt + dayKey when user voted today (Phase 11.6: votedAt replaces usedAt)', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser({ coinBalance: 3 });
     const before = Date.now();
@@ -420,12 +420,17 @@ describe('VoteService.getTodayStatus', () => {
 
     const status = await svc.getTodayStatus(user._id);
     expect(status.canVote).toBe(false);
-    expect(status.usedAt).toBeInstanceOf(Date);
-    expect(status.usedAt && status.usedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(status.votedAt).toBeInstanceOf(Date);
+    expect(status.votedAt && status.votedAt.getTime()).toBeGreaterThanOrEqual(before);
     expect(status.dayKey).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Phase 11.6 — totalVotesToday counts all users in this tier;
+    // we just inserted one so it must be 1.
+    expect(status.totalVotesToday).toBe(1);
+    // Phase 11.6 — usedAt is gone; only votedAt now.
+    expect(status).not.toHaveProperty('usedAt');
   });
 
-  it('returns canVote: true when user voted yesterday but not today', async () => {
+  it('returns canVote: true with votedAt: null when user voted yesterday but not today', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser({ coinBalance: 3 });
 
@@ -444,19 +449,80 @@ describe('VoteService.getTodayStatus', () => {
 
     const status = await svc.getTodayStatus(user._id);
     expect(status.canVote).toBe(true);
-    expect(status.usedAt).toBeUndefined();
+    expect(status.votedAt).toBeNull();
     expect(status.dayKey).toBe(today.dayKey);
+    // Yesterday's vote does not contribute to today's count.
+    expect(status.totalVotesToday).toBe(0);
   });
 
-  it('returns canVote: true for a user who has never voted', async () => {
+  it('returns canVote: true with votedAt: null + totalVotesToday: 0 for a user who has never voted', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser({ coinBalance: 3 });
 
     const status = await svc.getTodayStatus(user._id);
     expect(status.canVote).toBe(true);
-    expect(status.usedAt).toBeUndefined();
+    expect(status.votedAt).toBeNull();
+    expect(status.totalVotesToday).toBe(0);
     // Phase 11.1 — tier echoed back, defaults to 'PUBLIC' when omitted.
     expect(status.tier).toBe('PUBLIC');
+  });
+
+  it('Phase 11.6 — totalVotesToday counts ALL users in the tier, not just the caller', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const caller = await mkUser({ coinBalance: 3 });
+    const other1 = await mkUser({ coinBalance: 3 });
+    const other2 = await mkUser({ coinBalance: 3 });
+
+    for (const u of [caller, other1, other2]) {
+      await svc.castVote({
+        userId: u._id,
+        tier: 'PUBLIC',
+        target: 'alpha',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      });
+    }
+
+    const status = await svc.getTodayStatus(caller._id);
+    expect(status.totalVotesToday).toBe(3);
+  });
+
+  it('Phase 11.6 — totalVotesToday is tier-scoped: PRO query ignores PUBLIC votes', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const u1 = await mkUser({
+      coinBalance: 3,
+      subscriptions: [{ tier: 'PRO', status: 'ACTIVE' }],
+    });
+    const u2 = await mkUser({ coinBalance: 3 }); // PUBLIC
+    const u3 = await mkUser({ coinBalance: 3 }); // PUBLIC
+
+    await svc.castVote({
+      userId: u1._id,
+      tier: 'PRO',
+      target: 'alpha',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+    await svc.castVote({
+      userId: u2._id,
+      tier: 'PUBLIC',
+      target: 'alpha',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+    await svc.castVote({
+      userId: u3._id,
+      tier: 'PUBLIC',
+      target: 'alpha',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+
+    const proStatus = await svc.getTodayStatus(u1._id, 'PRO');
+    expect(proStatus.totalVotesToday).toBe(1);
+
+    const publicStatus = await svc.getTodayStatus(u2._id, 'PUBLIC');
+    expect(publicStatus.totalVotesToday).toBe(2);
   });
 });
 
@@ -745,12 +811,12 @@ describe('VoteService.getTodayStatus — tier scoping', () => {
     const pub = await svc.getTodayStatus(user._id, 'PUBLIC');
     expect(pub.canVote).toBe(false);
     expect(pub.tier).toBe('PUBLIC');
-    expect(pub.usedAt).toBeInstanceOf(Date);
+    expect(pub.votedAt).toBeInstanceOf(Date);
 
     const pro = await svc.getTodayStatus(user._id, 'PRO');
     expect(pro.canVote).toBe(true);
     expect(pro.tier).toBe('PRO');
-    expect(pro.usedAt).toBeUndefined();
+    expect(pro.votedAt).toBeNull();
   });
 
   it('no tier param defaults to PUBLIC and echoes tier in response', async () => {
