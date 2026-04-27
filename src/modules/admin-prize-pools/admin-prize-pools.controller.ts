@@ -2,7 +2,11 @@ import type { Request, Response } from 'express';
 import { Types } from 'mongoose';
 import { ValidationError } from '../../shared/errors/AppError.js';
 import type { AuditCaptureContext } from '../../shared/middleware/audit-log.js';
-import type { PrizePoolService } from '../prize-pools/prize-pools.service.js';
+import { TIER_VALUES, type Tier } from '../../shared/models/_tier.js';
+import type {
+  ComputeAndPublishResult,
+  PrizePoolService,
+} from '../prize-pools/prize-pools.service.js';
 import type { AdminPrizePoolsService } from './admin-prize-pools.service.js';
 import {
   AdminMarkPayoutBodySchema,
@@ -25,21 +29,57 @@ export class AdminPrizePoolsController {
   };
 
   /**
-   * Manual trigger — wraps the existing Phase 6 compute primitive.
+   * Manual trigger — wraps the per-tier compute primitive (Phase 11.2).
    * Typically used when the midnight cron was missed (maintenance
    * window) or when the accountant wants to re-publish after a
-   * votes-collection correction. Returns `{created: false, …}` when
-   * the row already exists — idempotent at the service layer.
+   * votes-collection correction. Idempotent at the service layer.
+   *
+   * Body shape:
+   *   { dayKey, yesterdayDayKey, reason }            → fan out all three tiers
+   *   { dayKey, yesterdayDayKey, tier, reason }      → single tier only
    */
   run = async (req: Request): Promise<AuditCaptureContext> => {
     const body = AdminPrizePoolRunBodySchema.parse(req.body);
-    const result = await this.coreService.computeAndPublishPool({
-      dayKey: body.dayKey,
-      yesterdayDayKey: body.yesterdayDayKey,
-    });
+
+    let after: { reason: string; perTier: ComputeAndPublishResult[] };
+
+    if (body.tier) {
+      const result = await this.coreService.computeAndPublishPool({
+        dayKey: body.dayKey,
+        yesterdayDayKey: body.yesterdayDayKey,
+        tier: body.tier,
+      });
+      after = { reason: body.reason, perTier: [result] };
+    } else {
+      const settled = await Promise.allSettled(
+        TIER_VALUES.map((tier: Tier) =>
+          this.coreService.computeAndPublishPool({
+            dayKey: body.dayKey,
+            yesterdayDayKey: body.yesterdayDayKey,
+            tier,
+          }),
+        ),
+      );
+      const perTier: ComputeAndPublishResult[] = [];
+      const failures: Tier[] = [];
+      settled.forEach((s, idx) => {
+        const tier = TIER_VALUES[idx]!;
+        if (s.status === 'fulfilled') perTier.push(s.value);
+        else failures.push(tier);
+      });
+      if (failures.length > 0) {
+        // Re-throw so the auditing middleware records a failed run
+        // and the operator gets a 5xx surface.
+        throw new Error(
+          `prize-pool fanout: ${failures.length}/${TIER_VALUES.length} tiers failed (${failures.join(',')})`,
+        );
+      }
+      after = { reason: body.reason, perTier };
+    }
+
     return {
       before: null,
-      after: { ...result, reason: body.reason },
+      after,
       resourceKind: 'PrizePool',
     };
   };

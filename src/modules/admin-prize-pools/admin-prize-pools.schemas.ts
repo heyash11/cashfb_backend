@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TIER_VALUES } from '../../shared/models/_tier.js';
 
 const DayKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'dayKey must be YYYY-MM-DD');
 
@@ -9,10 +10,18 @@ export const AdminPrizePoolsListQuerySchema = z
   })
   .strict();
 
+/**
+ * Phase 11.2 — `tier` is OPTIONAL. Omitted = fan out all three
+ * tiers (operator-friendly default, matches the cron's behavior).
+ * Specified = run just that one tier (useful when the accountant
+ * needs to re-publish a single tier after a tier-specific data
+ * correction).
+ */
 export const AdminPrizePoolRunBodySchema = z
   .object({
     dayKey: DayKey,
     yesterdayDayKey: DayKey,
+    tier: z.enum(TIER_VALUES).optional(),
     reason: z.string().min(10).max(500),
   })
   .strict();
