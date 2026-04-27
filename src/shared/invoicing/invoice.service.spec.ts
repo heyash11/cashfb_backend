@@ -57,6 +57,7 @@ function mkUser(overrides: Partial<UserAttrs> = {}): UserAttrs {
     ageVerified: true,
     kyc: { status: 'NONE' },
     blocked: { isBlocked: false },
+    subscriptions: [],
     ...overrides,
   };
 }

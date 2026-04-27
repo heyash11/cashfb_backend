@@ -5,6 +5,11 @@ import { logger } from './config/logger.js';
 import { ephemeralStats, initJwtKeys, isEphemeralMode } from './shared/jwt/signer.js';
 import { startBullmqMetricsPoll } from './shared/metrics/bullmq.js';
 import { installProcessHandlers } from './shared/process-handlers.js';
+import { syncIndexesIfEnabled } from './shared/models/_index-sync.js';
+import { PrizePoolModel } from './shared/models/PrizePool.model.js';
+import { RedeemCodeModel } from './shared/models/RedeemCode.model.js';
+import { UserModel } from './shared/models/User.model.js';
+import { VoteModel } from './shared/models/Vote.model.js';
 
 async function main(): Promise<void> {
   installProcessHandlers();
@@ -12,6 +17,14 @@ async function main(): Promise<void> {
 
   await mongoose.connect(env.MONGO_URI);
   logger.info('[api] mongo connected');
+
+  // Phase 11.0 — opt-in index sync. Default false, set
+  // MONGO_SYNC_INDEXES_ON_BOOT=true on the first deployment of a
+  // release that carries an index schema change, then unset.
+  await syncIndexesIfEnabled(
+    [UserModel, VoteModel, PrizePoolModel, RedeemCodeModel],
+    env.MONGO_SYNC_INDEXES_ON_BOOT,
+  );
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

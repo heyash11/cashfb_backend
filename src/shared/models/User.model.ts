@@ -1,6 +1,7 @@
 import { Schema, model, Types, type HydratedDocument, type Model } from 'mongoose';
 import { baseSchemaOptions } from './_base.js';
 import type { SocialLinks } from './_shared.js';
+import { SUBSCRIBABLE_TIER_VALUES, type SubscribableTier } from './_tier.js';
 
 export interface UserKyc {
   status: 'NONE' | 'PENDING' | 'VERIFIED' | 'REJECTED';
@@ -31,6 +32,32 @@ export interface UserErasureHold {
   reason?: string;
   by?: Types.ObjectId;
   at?: Date;
+}
+
+/**
+ * Single entry in `User.subscriptions[]` (Phase 11.0). Each row
+ * unlocks one tier section in parallel; an empty array means the
+ * user is PUBLIC-only. Phase 11.3 will rework subscription webhook
+ * handlers to push/update entries here keyed by tier; until then
+ * the array is populated only by the Phase 11.0 backfill from
+ * legacy `User.tier` + `activeSubscriptionId`.
+ *
+ * Status mirrors the 3-value client-facing enum used by /me — the
+ * 8-value backend `Subscription.status` is mapped down at write
+ * time so the array is directly UI-renderable.
+ *
+ * NOTE: MongoDB cannot enforce uniqueness within an array via a
+ * single index. The "one entry per tier" invariant is a contract
+ * on the writer (Phase 11.3 webhook handlers must $addToSet by
+ * tier or do a guarded $set). Phase 11.0 backfill produces at
+ * most one entry per user, so the invariant is intact at landing.
+ */
+export interface UserSubscriptionEntry {
+  tier: SubscribableTier;
+  status: 'ACTIVE' | 'CANCELLED' | 'EXPIRED';
+  expiresAt?: Date;
+  /** Pointer back to the canonical `Subscription` row (audit trail). */
+  subscriptionId?: Types.ObjectId;
 }
 
 export interface UserAttrs {
@@ -66,6 +93,14 @@ export interface UserAttrs {
   lastVoteDate?: string;
   activeSubscriptionId?: Types.ObjectId;
   tierExpiresAt?: Date;
+  /**
+   * Phase 11.0 — parallel-tier subscription state. Defaulted to
+   * `[]` at the schema layer so it's always present on read.
+   * Legacy `tier` / `activeSubscriptionId` / `tierExpiresAt`
+   * fields above remain authoritative until Phase 11.5; this
+   * array is read by Phase 11.3+ writers and not yet by /me.
+   */
+  subscriptions: UserSubscriptionEntry[];
   primaryDeviceFingerprint?: string;
   lastLoginIp?: string;
   lastLoginAt?: Date;
@@ -123,6 +158,33 @@ const UserSchema = new Schema(
     },
     activeSubscriptionId: { type: Types.ObjectId, ref: 'Subscription' },
     tierExpiresAt: { type: Date, index: true },
+    // Phase 11.0 — parallel-tier subscription array. See
+    // UserSubscriptionEntry for the per-element shape and the
+    // writer-side uniqueness contract. `default: []` so reads
+    // always observe the array; pre-migration rows pick up an
+    // empty array on first hydration.
+    subscriptions: {
+      type: [
+        new Schema(
+          {
+            tier: {
+              type: String,
+              enum: SUBSCRIBABLE_TIER_VALUES,
+              required: true,
+            },
+            status: {
+              type: String,
+              enum: ['ACTIVE', 'CANCELLED', 'EXPIRED'],
+              required: true,
+            },
+            expiresAt: Date,
+            subscriptionId: { type: Types.ObjectId, ref: 'Subscription' },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
 
     // KYC (lazy capture before first payout over app_config.kycThresholdAmount).
     kyc: {
@@ -178,7 +240,11 @@ const UserSchema = new Schema(
   baseSchemaOptions,
 );
 
-UserSchema.index({ tier: 1, tierExpiresAt: 1 }); // tier + expiry sweep
+UserSchema.index({ tier: 1, tierExpiresAt: 1 }); // tier + expiry sweep (legacy single-tier path)
+// Phase 11.0 — multi-tier sweep query path for Phase 11.3+
+// (`subscriptions[].expiresAt < now AND subscriptions[].status = 'ACTIVE'`).
+// Multi-key index over the array fields.
+UserSchema.index({ 'subscriptions.tier': 1, 'subscriptions.expiresAt': 1 });
 UserSchema.index({ declaredState: 1, geoBlocked: 1 }); // geo-block check
 UserSchema.index({ 'blocked.isBlocked': 1 }); // block enforcement
 UserSchema.index({ 'kyc.panLast4': 1 }); // admin PAN search

@@ -17,6 +17,11 @@ import {
   createWebhookRetryHandler,
 } from './workers/webhook-retry.worker.js';
 import { installProcessHandlers } from './shared/process-handlers.js';
+import { syncIndexesIfEnabled } from './shared/models/_index-sync.js';
+import { PrizePoolModel } from './shared/models/PrizePool.model.js';
+import { RedeemCodeModel } from './shared/models/RedeemCode.model.js';
+import { UserModel } from './shared/models/User.model.js';
+import { VoteModel } from './shared/models/Vote.model.js';
 import { installShutdownHandlers, registerWorker } from './workers/shutdown.js';
 import { createTierSweepHandler, type TierSweepJobData } from './workers/tier-sweep.worker.js';
 import { createTopDonorHandler, type TopDonorJobData } from './workers/top-donor.worker.js';
@@ -77,6 +82,14 @@ async function main(): Promise<void> {
 
   await mongoose.connect(env.MONGO_URI);
   logger.info('[worker] mongo connected');
+
+  // Phase 11.0 — same opt-in index sync as the API process. Both
+  // services run `syncIndexes()` independently when the flag is on;
+  // the operation is idempotent so duplicate execution is safe.
+  await syncIndexesIfEnabled(
+    [UserModel, VoteModel, PrizePoolModel, RedeemCodeModel],
+    env.MONGO_SYNC_INDEXES_ON_BOOT,
+  );
 
   // Lazy Queue construction + register repeatable schedulers. BullMQ
   // dedupes on jobId; duplicate adds return existing job reference

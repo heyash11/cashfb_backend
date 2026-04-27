@@ -37,6 +37,7 @@ function makeUser(overrides: Partial<UserAttrs> = {}): UserAttrs {
       verifiedAt: new Date('2026-03-15'),
     },
     blocked: { isBlocked: false },
+    subscriptions: [],
     ...overrides,
   };
 }

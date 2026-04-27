@@ -61,6 +61,15 @@ const EnvSchema = z
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
     BULL_DLQ_NAME: z.string().min(1).default('dlq'),
 
+    // Phase 11.0 — opt-in boot-time `Model.syncIndexes()` for the
+    // tier-migration index swaps. See src/shared/models/_index-sync.ts
+    // for operator workflow. Default `false` so prod reboots are
+    // never side-effecting.
+    MONGO_SYNC_INDEXES_ON_BOOT: z
+      .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+      .default(false)
+      .transform((v) => v === true || v === 'true' || v === '1'),
+
     // Sentry. All optional — absent DSN short-circuits Sentry.init to
     // a no-op so local / CI boots stay unaffected. SENTRY_RELEASE is
     // injected at image build time via the Dockerfile GIT_SHA ARG.
