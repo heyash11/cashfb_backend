@@ -52,7 +52,7 @@ function mkUser(overrides: Partial<UserAttrs> = {}): UserAttrs {
     totalCoinsEarned: 0,
     totalVotesCast: 0,
     signupBonusGranted: true,
-    tier: 'PRO',
+    tokenVersion: 1,
     geoBlocked: false,
     ageVerified: true,
     kyc: { status: 'NONE' },

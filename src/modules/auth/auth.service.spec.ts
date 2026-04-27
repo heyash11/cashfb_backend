@@ -10,7 +10,9 @@ import {
   hashRefreshToken,
   initJwtKeys,
   signRefreshToken,
+  verifyRefreshToken,
 } from '../../shared/jwt/signer.js';
+import { runBumpTokenVersions } from '../../migrations/phase-11-5/drop-legacy-tier-fields.js';
 import { CoinTransactionModel } from '../../shared/models/CoinTransaction.model.js';
 import { DeviceFingerprintModel } from '../../shared/models/DeviceFingerprint.model.js';
 import { LoginSessionModel } from '../../shared/models/LoginSession.model.js';
@@ -97,7 +99,6 @@ describe('AuthService.verifySignupOtp — happy path', () => {
     const result = await svc.verifySignupOtp(signupInput());
 
     expect(result.user.phone).toBe('+919000000001');
-    expect(result.user.tier).toBe('PUBLIC');
     expect(result.user.coinBalance).toBe(3);
     expect(result.tokens.access).toBeTruthy();
     expect(result.tokens.refresh).toBeTruthy();
@@ -404,6 +405,7 @@ describe('AuthService.refresh — state machine', () => {
       sub: new mongoose.Types.ObjectId().toString(),
       jti: 'phantom-jti',
       family: 'phantom-family',
+      tokenVersion: 1,
     });
 
     await expect(
@@ -443,6 +445,145 @@ describe('AuthService.refresh — state machine', () => {
     const user = await UserModel.findOne({ phone: '+919000000001' });
     const sessions = await LoginSessionModel.find({ userId: user?._id });
     expect(sessions.length).toBeGreaterThanOrEqual(2);
+    expect(sessions.every((s) => s.revokedAt)).toBe(true);
+  });
+});
+
+// ---- Phase 11.5 — refresh-path tokenVersion enforcement ----
+
+/**
+ * §A12 acceptance: a force-logout via tokenVersion-bump must not be
+ * bypass-able through a still-live refresh token whose access sibling
+ * has expired. The four specs below lock the contract end-to-end:
+ *  1. matching tokenVersion → success
+ *  2. mismatched tokenVersion → 401 TOKEN_VERSION_MISMATCH
+ *  3. pre-11.5 token (no claim → parses as 0) vs default User.tokenVersion=1
+ *  4. post-bump scenario — proves the deploy-time cutoff sticks across
+ *     access-expiry → refresh path (the actual force-logout flow).
+ */
+describe('AuthService.refresh — Phase 11.5 tokenVersion enforcement', () => {
+  it('Spec 1: matching tokenVersion → rotates and returns new tokens', async () => {
+    const otp = new MockOtpService();
+    const svc = new AuthService({ otpService: otp });
+
+    const signup = await svc.verifySignupOtp(signupInput());
+    const issued = await verifyRefreshToken(signup.tokens.refresh);
+    expect(issued.tokenVersion).toBe(1);
+
+    const rotated = await svc.refresh({
+      refreshToken: signup.tokens.refresh,
+      deviceId: 'dev-1',
+      ipAddress: '127.0.0.1',
+      userAgent: 'UA',
+    });
+
+    expect(rotated.access).toBeTruthy();
+    expect(rotated.refresh).not.toBe(signup.tokens.refresh);
+    const newClaims = await verifyRefreshToken(rotated.refresh);
+    expect(newClaims.tokenVersion).toBe(1);
+  });
+
+  it('Spec 2: mismatched tokenVersion → 401 TOKEN_VERSION_MISMATCH and family revoked', async () => {
+    const otp = new MockOtpService();
+    const svc = new AuthService({ otpService: otp });
+    const signup = await svc.verifySignupOtp(signupInput());
+
+    // Out-of-band: bump the User.tokenVersion to simulate a force-logout
+    // since signup. The refresh token still carries tokenVersion=1.
+    const user = await UserModel.findOne({ phone: '+919000000001' });
+    await UserModel.updateOne({ _id: user?._id }, { $set: { tokenVersion: 7 } });
+
+    await expect(
+      svc.refresh({
+        refreshToken: signup.tokens.refresh,
+        deviceId: 'dev-1',
+        ipAddress: '127.0.0.1',
+        userAgent: 'UA',
+      }),
+    ).rejects.toMatchObject({ message: 'TOKEN_VERSION_MISMATCH' });
+
+    // Family revoke — every session for this user dies, so the
+    // attacker-or-stale-client cannot bounce on a sibling session.
+    const sessions = await LoginSessionModel.find({ userId: user?._id });
+    expect(sessions.every((s) => s.revokedAt)).toBe(true);
+  });
+
+  it('Spec 3: pre-11.5 token (no tokenVersion claim → parses as 0) → 401 against default User.tokenVersion=1', async () => {
+    const otp = new MockOtpService();
+    const svc = new AuthService({ otpService: otp });
+    const signup = await svc.verifySignupOtp(signupInput());
+
+    // Forge a pre-11.5-style token by signing with tokenVersion=0.
+    // The verify path treats missing claim as 0 (signer.ts L162-163);
+    // signing 0 explicitly is observationally identical and the only
+    // way to construct one without bypassing the signer entirely.
+    const session = await LoginSessionModel.findOne({});
+    const user = await UserModel.findOne({ phone: '+919000000001' });
+    expect(session?.family).toBeTruthy();
+    expect(user?.tokenVersion).toBe(1);
+
+    const preToken = await signRefreshToken({
+      sub: String(user?._id),
+      jti: session?.jti ?? 'jti-fallback',
+      family: session?.family ?? 'fam-fallback',
+      tokenVersion: 0,
+    });
+
+    // Replace the active session's hash so the lookup matches the
+    // forged token (otherwise we'd hit Case D before tokenVersion).
+    await LoginSessionModel.updateOne(
+      { _id: session?._id },
+      { $set: { refreshTokenHash: hashRefreshToken(preToken) } },
+    );
+
+    await expect(
+      svc.refresh({
+        refreshToken: preToken,
+        deviceId: 'dev-1',
+        ipAddress: '127.0.0.1',
+        userAgent: 'UA',
+      }),
+    ).rejects.toMatchObject({ message: 'TOKEN_VERSION_MISMATCH' });
+
+    // Use signup token to silence unused-var; sanity-check it carries v1.
+    const issued = await verifyRefreshToken(signup.tokens.refresh);
+    expect(issued.tokenVersion).toBe(1);
+  });
+
+  it('Spec 4: refresh AFTER runBumpTokenVersions → 401 even on a still-valid refresh token (force-logout sticks across access-expiry)', async () => {
+    const otp = new MockOtpService();
+    const svc = new AuthService({ otpService: otp });
+
+    // User signs up → tokenVersion=1 baked into refresh token.
+    const signup = await svc.verifySignupOtp(signupInput());
+    const beforeClaims = await verifyRefreshToken(signup.tokens.refresh);
+    expect(beforeClaims.tokenVersion).toBe(1);
+
+    // Operator runs the deploy-time force-logout sweep. Every User
+    // row's tokenVersion gets $inc'd by 1.
+    const report = await runBumpTokenVersions();
+    expect(report.matched).toBeGreaterThanOrEqual(1);
+    expect(report.modified).toBeGreaterThanOrEqual(1);
+
+    const userAfter = await UserModel.findOne({ phone: '+919000000001' });
+    expect(userAfter?.tokenVersion).toBe(2);
+
+    // Simulate the real-world scenario: access token has expired
+    // naturally; client comes back to /refresh with the still-live
+    // refresh token. Without the §A12 check this would mint a fresh
+    // access pair — backdoor around the deploy cutoff.
+    await expect(
+      svc.refresh({
+        refreshToken: signup.tokens.refresh,
+        deviceId: 'dev-1',
+        ipAddress: '127.0.0.1',
+        userAgent: 'UA',
+      }),
+    ).rejects.toMatchObject({ message: 'TOKEN_VERSION_MISMATCH' });
+
+    // Family revoked → the user must re-login from scratch, which
+    // is the entire point of the bump-token-versions deploy step.
+    const sessions = await LoginSessionModel.find({ userId: userAfter?._id });
     expect(sessions.every((s) => s.revokedAt)).toBe(true);
   });
 });

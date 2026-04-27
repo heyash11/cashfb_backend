@@ -76,16 +76,35 @@ export async function runBackfillUserSubscriptions(
 
   // Working set: users on a non-PUBLIC tier. Includes anomalies
   // (no activeSubscriptionId) so we can log them.
-  const candidates = await UserModel.find(
-    { tier: { $ne: 'PUBLIC' } },
-    {
-      _id: 1,
-      tier: 1,
-      activeSubscriptionId: 1,
-      tierExpiresAt: 1,
-      subscriptions: 1,
-    },
-  ).lean();
+  //
+  // Phase 11.5 — the legacy tier/activeSubscriptionId/tierExpiresAt
+  // fields no longer exist on the User schema. This backfill ran
+  // ONCE during 11.0 dev migration and will run once on prod
+  // BEFORE the 11.5 field drop. After 11.5 ships, it becomes
+  // inert (no users match `tier: {$ne: 'PUBLIC'}` because there's
+  // no `tier` field). The collection-level driver bypasses
+  // Mongoose schema strictness so the field-presence query still
+  // works on un-migrated rows.
+  const candidates = (await UserModel.collection
+    .find(
+      { tier: { $ne: 'PUBLIC' } },
+      {
+        projection: {
+          _id: 1,
+          tier: 1,
+          activeSubscriptionId: 1,
+          tierExpiresAt: 1,
+          subscriptions: 1,
+        },
+      },
+    )
+    .toArray()) as unknown as Array<{
+    _id: Types.ObjectId;
+    tier?: SubscribableTier | 'PUBLIC';
+    activeSubscriptionId?: Types.ObjectId;
+    tierExpiresAt?: Date;
+    subscriptions?: Array<{ tier: SubscribableTier }>;
+  }>;
 
   const scanned = candidates.length;
   let updated = 0;

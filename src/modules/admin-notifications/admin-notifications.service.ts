@@ -83,7 +83,16 @@ export class AdminNotificationsService {
       return [target.userId];
     }
     const q: FilterQuery<UserAttrs> = {};
-    if (target.mode === 'tier') q.tier = target.tier;
+    if (target.mode === 'tier') {
+      // Phase 11.5 — User.tier dropped; tier filter translates to
+      // `subscriptions[]` query. PUBLIC = empty array; PRO/PRO_MAX
+      // = active entry of that tier.
+      if (target.tier === 'PUBLIC') {
+        q.subscriptions = { $size: 0 };
+      } else {
+        q['subscriptions.tier'] = target.tier;
+      }
+    }
     const users = await UserModel.find(q, { _id: 1 }).lean<Pick<UserAttrs, '_id'>[]>();
     return users.map((u) => u._id);
   }

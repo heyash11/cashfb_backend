@@ -26,24 +26,6 @@ export const SUBSCRIBABLE_TIER_VALUES = [
   'PRO_MAX',
 ] as const satisfies readonly SubscribableTier[];
 
-const TIER_RANK: Record<Tier, number> = { PUBLIC: 0, PRO: 1, PRO_MAX: 2 };
-
-/**
- * @deprecated Phase 11.4 — replaced by `userCanAccessTier`. The
- * hierarchical-gating semantic was wrong under the parallel-tier
- * product model: a PRO_MAX-only subscriber does NOT have access to
- * PRO content (they didn't pay for it). Tier subscriptions are
- * stackable and genuinely independent.
- *
- * Retained without callers for one cleanup chunk so backfill /
- * migration tooling and any straggler tests still compile. Removal
- * in Phase 11.5 along with the legacy `User.tier` denormalized
- * field that this helper read.
- */
-export function tierGrantsAccess(userTier: Tier, requestedTier: Tier): boolean {
-  return TIER_RANK[userTier] >= TIER_RANK[requestedTier];
-}
-
 /**
  * Phase 11.4 — strict subscription-based access predicate. The
  * canonical replacement for `tierGrantsAccess`. Reads from

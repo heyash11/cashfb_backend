@@ -3,32 +3,24 @@ import { Types } from 'mongoose';
 import { ForbiddenError } from '../../shared/errors/AppError.js';
 import { requireAuthedUser } from '../../shared/middleware/auth.middleware.js';
 import { userCanAccessTier } from '../../shared/models/_tier.js';
-import { UserRepository } from '../../shared/repositories/User.repository.js';
 import type { CustomRoomsService } from './custom-rooms.service.js';
 import { ListRoomsQuerySchema, RoomIdParamsSchema } from './custom-rooms.schemas.js';
 
 /**
  * User-facing custom-rooms HTTP edge.
  *
- * Phase 11.4 — STRICT subscription-based auth on every endpoint.
- * Reads `User.subscriptions[]` and gates via `userCanAccessTier`.
- * One extra DB read per authed call; Phase 11.5 will optimize via
- * JWT claims carrying accessibleTiers.
+ * Phase 11.5 — auth middleware attaches `subscriptions[]` to
+ * `req.user`. Controllers consume directly; no duplicate fetch.
  */
 export class CustomRoomsController {
-  constructor(
-    private readonly service: CustomRoomsService,
-    private readonly userRepo: UserRepository = new UserRepository(),
-  ) {}
+  constructor(private readonly service: CustomRoomsService) {}
 
   list = async (req: Request, res: Response): Promise<void> => {
     const query = ListRoomsQuerySchema.parse(req.query);
-    const authed = requireAuthedUser(req);
-    const userId = new Types.ObjectId(authed.sub);
-    const user = await this.userRepo.findById(userId);
-    const subscriptions = user?.subscriptions ?? [];
+    const claims = requireAuthedUser(req);
+    const userId = new Types.ObjectId(claims.sub);
 
-    if (!userCanAccessTier(subscriptions, query.tier, new Date())) {
+    if (!userCanAccessTier(claims.subscriptions, query.tier, new Date())) {
       throw new ForbiddenError(
         'TIER_NOT_ACCESSIBLE',
         `Subscription required to view ${query.tier} custom rooms`,
@@ -37,7 +29,7 @@ export class CustomRoomsController {
 
     const items = await this.service.listForDay({
       userId,
-      subscriptions,
+      subscriptions: claims.subscriptions,
       tier: query.tier,
       game: query.game,
       page: query.page,
@@ -48,10 +40,9 @@ export class CustomRoomsController {
 
   register = async (req: Request, res: Response): Promise<void> => {
     const { id: roomId } = RoomIdParamsSchema.parse(req.params);
-    const authed = requireAuthedUser(req);
-    const userId = new Types.ObjectId(authed.sub);
-    const user = await this.userRepo.findById(userId);
-    const result = await this.service.register(roomId, userId, user?.subscriptions ?? []);
+    const claims = requireAuthedUser(req);
+    const userId = new Types.ObjectId(claims.sub);
+    const result = await this.service.register(roomId, userId, claims.subscriptions);
     res.json({ success: true, data: result });
   };
 

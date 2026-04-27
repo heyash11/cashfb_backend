@@ -253,7 +253,6 @@ describe('RedeemCodeService.listForPost', () => {
     const items = await svc.listForPost({
       postId: post._id,
       userId: user._id,
-      userTier: 'PUBLIC',
     });
     expect(items).toHaveLength(2);
     for (const item of items) {

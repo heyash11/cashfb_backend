@@ -11,17 +11,18 @@ import { seedAdminSession } from '../../../test/testing/admin-session-seed.js';
 import { AuditLogModel } from '../../shared/models/AuditLog.model.js';
 import { NotificationModel } from '../../shared/models/Notification.model.js';
 import { MODELS } from '../../shared/models/index.js';
-import { UserModel, type UserAttrs } from '../../shared/models/User.model.js';
+import { UserModel } from '../../shared/models/User.model.js';
 
 type AnyModel = { syncIndexes(): Promise<string[]> };
 
-async function seedUser(tier: UserAttrs['tier'] = 'PUBLIC') {
+async function seedUser(opts: { tier?: 'PRO' | 'PRO_MAX' } = {}) {
+  const subscriptions = opts.tier ? [{ tier: opts.tier, status: 'ACTIVE' as const }] : [];
   return UserModel.create({
     phone: `9${Math.floor(100000000 + Math.random() * 899999999)}`,
     dob: new Date('1998-01-01'),
     declaredState: 'IN-MH',
-    tier,
     coinBalance: 0,
+    subscriptions,
   });
 }
 
@@ -42,9 +43,9 @@ describe('admin-notifications routes', () => {
   const app = createApp();
 
   it('POST /broadcast tier=PRO inserts one notification per PRO user with shared broadcastId', async () => {
-    await seedUser('PUBLIC');
-    const pro1 = await seedUser('PRO');
-    const pro2 = await seedUser('PRO');
+    await seedUser();
+    const pro1 = await seedUser({ tier: 'PRO' });
+    const pro2 = await seedUser({ tier: 'PRO' });
     const seed = await seedAdminSession({ role: 'CONTENT_ADMIN' });
 
     const res = await request(app)
@@ -80,8 +81,8 @@ describe('admin-notifications routes', () => {
   });
 
   it('POST /broadcast user=<id> inserts exactly one row targeted at that user', async () => {
-    const target = await seedUser('PRO_MAX');
-    await seedUser('PRO_MAX');
+    const target = await seedUser();
+    await seedUser();
     const seed = await seedAdminSession({ role: 'CONTENT_ADMIN' });
 
     const res = await request(app)

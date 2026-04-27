@@ -47,8 +47,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     const expired = await Promise.all(
       Array.from({ length: 5 }, () =>
         mkUser({
-          tier: 'PRO',
-          tierExpiresAt: hourAgo,
           subscriptions: [
             {
               tier: 'PRO',
@@ -64,8 +62,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     const nonExpired = await Promise.all(
       Array.from({ length: 5 }, () =>
         mkUser({
-          tier: 'PRO',
-          tierExpiresAt: hourAhead,
           subscriptions: [
             {
               tier: 'PRO',
@@ -84,14 +80,11 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     for (const u of expired) {
       const after = await UserModel.findById(u._id);
       expect(after?.subscriptions ?? []).toEqual([]);
-      expect(after?.tier).toBe('PUBLIC');
-      expect(after?.tierExpiresAt ?? null).toBeNull();
     }
     for (const u of nonExpired) {
       const after = await UserModel.findById(u._id);
       expect(after?.subscriptions).toHaveLength(1);
-      expect(after?.tier).toBe('PRO');
-      expect(after?.tierExpiresAt?.toISOString()).toBe(hourAhead.toISOString());
+      expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(hourAhead.toISOString());
     }
   });
 
@@ -101,8 +94,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     const future = new Date(now.getTime() + 60 * 60_000);
 
     const user = await mkUser({
-      tier: 'PRO_MAX',
-      tierExpiresAt: future,
       subscriptions: [
         { tier: 'PRO', status: 'ACTIVE', expiresAt: past, subscriptionId: new Types.ObjectId() },
         {
@@ -119,8 +110,7 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     const after = await UserModel.findById(user._id);
     expect(after?.subscriptions).toHaveLength(1);
     expect(after?.subscriptions[0]?.tier).toBe('PRO_MAX');
-    expect(after?.tier).toBe('PRO_MAX');
-    expect(after?.tierExpiresAt?.toISOString()).toBe(future.toISOString());
+    expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(future.toISOString());
   });
 
   it('both entries expired → array empty, tier=PUBLIC, tierExpiresAt=null', async () => {
@@ -128,7 +118,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     const past = new Date(now.getTime() - 60 * 60_000);
 
     const user = await mkUser({
-      tier: 'PRO_MAX',
       subscriptions: [
         { tier: 'PRO', status: 'ACTIVE', expiresAt: past, subscriptionId: new Types.ObjectId() },
         {
@@ -144,8 +133,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
 
     const after = await UserModel.findById(user._id);
     expect(after?.subscriptions ?? []).toEqual([]);
-    expect(after?.tier).toBe('PUBLIC');
-    expect(after?.tierExpiresAt ?? null).toBeNull();
   });
 
   it('idempotent re-run produces no further changes', async () => {
@@ -153,7 +140,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     const past = new Date(now.getTime() - 60 * 60_000);
 
     const user = await mkUser({
-      tier: 'PRO',
       subscriptions: [
         { tier: 'PRO', status: 'ACTIVE', expiresAt: past, subscriptionId: new Types.ObjectId() },
       ],
@@ -166,24 +152,21 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     expect(second.sweptCount).toBe(0);
 
     const after = await UserModel.findById(user._id);
-    expect(after?.tier).toBe('PUBLIC');
     expect(after?.subscriptions ?? []).toEqual([]);
   });
 
-  // R8 — anomaly users (Phase 11.0 backfill: legacy tier set, empty subscriptions[]).
-  it('anomaly users (legacy tier=PRO, empty subscriptions[]) are untouched by sweep', async () => {
+  // Phase 11.5 — anomaly users (Phase 11.0 backfill: empty
+  // subscriptions[], legacy tier field already gone post-11.5
+  // migration). Sweep skips them naturally because the candidate
+  // scan looks for users with at least one expiring entry.
+  it('users with empty subscriptions[] are untouched by sweep', async () => {
     const now = new Date('2026-04-23T10:00:00Z');
-    const anomaly = await mkUser({
-      tier: 'PRO',
-      // tierExpiresAt omitted (anomaly users have no expiry pointer);
-      // subscriptions defaults to [].
-    });
+    const anomaly = await mkUser({});
 
     const result = await sweepExpiredTiers({ clock: () => now });
     expect(result.sweptCount).toBe(0);
 
     const after = await UserModel.findById(anomaly._id);
-    expect(after?.tier).toBe('PRO');
     expect(after?.subscriptions ?? []).toEqual([]);
   });
 
@@ -194,7 +177,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     const future = new Date(now.getTime() + 60 * 60_000);
 
     const user = await mkUser({
-      tier: 'PRO',
       subscriptions: [
         { tier: 'PRO', status: 'ACTIVE', expiresAt: past, subscriptionId: new Types.ObjectId() },
       ],
@@ -220,8 +202,8 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     expect(result.sweptCount).toBeLessThanOrEqual(1);
     const after = await UserModel.findById(user._id);
     expect(after?.subscriptions).toHaveLength(1);
+    expect(after?.subscriptions[0]?.tier).toBe('PRO');
     expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(future.toISOString());
-    expect(after?.tier).toBe('PRO');
   });
 
   it('concurrent parallel sweeps produce exactly one total update per expired user', async () => {
@@ -231,7 +213,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     await Promise.all(
       Array.from({ length: 5 }, () =>
         mkUser({
-          tier: 'PRO',
           subscriptions: [
             {
               tier: 'PRO',
@@ -254,14 +235,12 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
       return sum + r.value.sweptCount;
     }, 0);
     // Convergent predicate: total writes equals total expired users.
-    // Both runs see the same candidate set initially; the pipeline's
-    // $filter is naturally idempotent for the second run (entry
-    // already removed).
     expect(totalSwept).toBeGreaterThanOrEqual(5);
     expect(totalSwept).toBeLessThanOrEqual(10);
 
-    const pubCount = await UserModel.countDocuments({ tier: 'PUBLIC' });
-    expect(pubCount).toBe(5);
+    // All 5 users now have empty subscriptions[].
+    const emptyCount = await UserModel.countDocuments({ subscriptions: { $size: 0 } });
+    expect(emptyCount).toBeGreaterThanOrEqual(5);
   });
 
   it('batchSize caps single-call work: 600 expired users with batchSize=100 sweeps 100 per call', async () => {
@@ -271,7 +250,6 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
     await Promise.all(
       Array.from({ length: 600 }, () =>
         mkUser({
-          tier: 'PRO',
           subscriptions: [
             {
               tier: 'PRO',
@@ -286,10 +264,11 @@ describe('sweepExpiredTiers — Phase 11.3 multi-sub', () => {
 
     const first = await sweepExpiredTiers({ clock: () => now, batchSize: 100 });
     expect(first.sweptCount).toBe(100);
-    expect(await UserModel.countDocuments({ tier: 'PRO' })).toBe(500);
+    // 100 of 600 users now have empty subscriptions[].
+    expect(await UserModel.countDocuments({ subscriptions: { $size: 0 } })).toBe(100);
 
     const second = await sweepExpiredTiers({ clock: () => now, batchSize: 100 });
     expect(second.sweptCount).toBe(100);
-    expect(await UserModel.countDocuments({ tier: 'PRO' })).toBe(400);
+    expect(await UserModel.countDocuments({ subscriptions: { $size: 0 } })).toBe(200);
   }, 30_000);
 });

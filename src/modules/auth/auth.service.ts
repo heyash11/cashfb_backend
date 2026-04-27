@@ -39,7 +39,6 @@ export interface AuthTokens {
 export interface AuthedUserDto {
   id: string;
   phone: string;
-  tier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
   coinBalance: number;
   displayName: string | undefined;
 }
@@ -258,7 +257,6 @@ export class AuthService {
       coinBalance: SIGNUP_BONUS_COINS,
       totalCoinsEarned: SIGNUP_BONUS_COINS,
       signupBonusGranted: true,
-      tier: 'PUBLIC',
       primaryDeviceFingerprint: input.deviceFingerprint,
       lastLoginIp: input.ipAddress,
       lastLoginAt: new Date(),
@@ -300,10 +298,13 @@ export class AuthService {
     });
 
     // 4. Issue tokens + login session.
+    // Phase 11.5 — fresh signups start at tokenVersion=1 (User
+    // schema default); read userDoc.tokenVersion explicitly so
+    // any future schema change to the default surfaces here.
     const tokens = await this.issueTokensAndSession(
       {
         userId,
-        tier: 'PUBLIC',
+        tokenVersion: userDoc.tokenVersion,
         deviceId: input.deviceId,
         deviceFingerprint: input.deviceFingerprint,
         ipAddress: input.ipAddress,
@@ -316,7 +317,6 @@ export class AuthService {
       user: {
         id: String(userId),
         phone: input.phone,
-        tier: 'PUBLIC',
         coinBalance: SIGNUP_BONUS_COINS,
         displayName: undefined,
       },
@@ -392,15 +392,11 @@ export class AuthService {
     if (user.blocked?.isBlocked) {
       throw new ForbiddenError('USER_BLOCKED', 'Account is blocked');
     }
-    const userTier = user.tier;
-    if (userTier !== 'PUBLIC' && userTier !== 'PRO' && userTier !== 'PRO_MAX') {
-      throw new InternalError('INVARIANT', 'user has invalid tier');
-    }
 
     const userId = user._id;
     const tokens = await this.issueTokensAndSession({
       userId,
-      tier: userTier,
+      tokenVersion: user.tokenVersion,
       deviceId: input.deviceId,
       deviceFingerprint: input.deviceFingerprint,
       ipAddress: input.ipAddress,
@@ -417,7 +413,6 @@ export class AuthService {
       user: {
         id: String(userId),
         phone: user.phone,
-        tier: userTier,
         coinBalance: user.coinBalance ?? 0,
         displayName: user.displayName ?? undefined,
       },
@@ -498,7 +493,7 @@ export class AuthService {
       throw new ForbiddenError('DEVICE_MISMATCH', 'Token does not match device');
     }
 
-    // Case A: normal rotation. Fetch user for current tier + block state.
+    // Case A: normal rotation. Fetch user for tokenVersion + block state.
     const user = await this.userRepo.findById(claims.sub);
     if (!user) throw new UnauthorizedError('User not found');
     if (user.anonymizedAt) {
@@ -513,9 +508,17 @@ export class AuthService {
     if (user.blocked?.isBlocked) {
       throw new ForbiddenError('USER_BLOCKED', 'Account is blocked');
     }
-    const userTier = user.tier;
-    if (userTier !== 'PUBLIC' && userTier !== 'PRO' && userTier !== 'PRO_MAX') {
-      throw new InternalError('INVARIANT', 'user has invalid tier');
+    // Phase 11.5 §A12 — tokenVersion check on the refresh path.
+    // Without this, a force-logout via tokenVersion-bump only
+    // invalidates active access tokens; the refresh token would
+    // still mint new access tokens — backdoor around the
+    // deploy-time cutoff. Pre-11.5 refresh tokens (no claim)
+    // surface as `tokenVersion: 0` per the verifyRefreshToken
+    // path; mismatch with default User.tokenVersion=1 forces
+    // re-login.
+    if (claims.tokenVersion !== user.tokenVersion) {
+      await this.sessionRepo.revokeFamily(claims.family);
+      throw new UnauthorizedError('TOKEN_VERSION_MISMATCH');
     }
 
     const userId = user._id;
@@ -545,7 +548,7 @@ export class AuthService {
 
         const rotatedInput: {
           userId: Types.ObjectId;
-          tier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+          tokenVersion: number;
           deviceId: string;
           deviceFingerprint: string | null;
           ipAddress: string;
@@ -553,7 +556,7 @@ export class AuthService {
           family?: string;
         } = {
           userId,
-          tier: userTier,
+          tokenVersion: user.tokenVersion,
           deviceId: session.deviceId ?? input.deviceId,
           deviceFingerprint: session.deviceFingerprint ?? null,
           ipAddress: input.ipAddress,
@@ -640,10 +643,17 @@ export class AuthService {
     );
   }
 
+  /**
+   * Phase 11.5 — `tokenVersion` is the JWT force-logout primary
+   * mechanism. Both access + refresh tokens carry it; the middleware
+   * compares against `User.tokenVersion` on every authed request.
+   * Operator bumps the User row via `scripts/bump-token-versions.ts`
+   * to invalidate every existing token.
+   */
   private async issueTokensAndSession(
     input: {
       userId: Types.ObjectId;
-      tier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
+      tokenVersion: number;
       deviceId: string;
       deviceFingerprint: string | null;
       ipAddress: string;
@@ -656,8 +666,8 @@ export class AuthService {
     const family = input.family ?? randomUUID();
     const sub = String(input.userId);
 
-    const access = await signAccessToken({ sub, tier: input.tier, jti });
-    const refresh = await signRefreshToken({ sub, jti, family });
+    const access = await signAccessToken({ sub, jti, tokenVersion: input.tokenVersion });
+    const refresh = await signRefreshToken({ sub, jti, family, tokenVersion: input.tokenVersion });
 
     const sessionData: Partial<LoginSessionAttrs> = {
       userId: input.userId,

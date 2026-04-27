@@ -1,15 +1,4 @@
-import { Types } from 'mongoose';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  clearAllCollections,
-  connectTestMongo,
-  disconnectTestMongo,
-} from '../../../test/testing/mongo.js';
-import {
-  buildDeriveTierExpiresAtPipelineExpr,
-  buildDeriveTierPipelineExpr,
-} from '../../modules/subscriptions/_subscriptions.pipelines.js';
-import { UserModel } from './User.model.js';
+import { describe, expect, it } from 'vitest';
 import {
   deriveCurrentTier,
   deriveTierExpiresAt,
@@ -18,21 +7,20 @@ import {
 } from './_tier.js';
 
 /**
- * Phase 11.3 §A9 — dual-implementation contract spec. The canonical
- * tier-derivation rule is implemented BOTH in JavaScript
- * (`deriveCurrentTier` / `deriveTierExpiresAt` in _tier.ts) AND as
- * a MongoDB aggregation-pipeline expression (in
- * modules/subscriptions/_subscriptions.pipelines.ts). The webhook
- * handlers and sweep use the pipeline; tests, /me-equivalents, and
- * future callers use the JS function.
+ * Phase 11.5 — `deriveCurrentTier` and `deriveTierExpiresAt`
+ * matrix specs.
  *
- * Drift between the two implementations would be a silent
- * correctness bug the moment either side moves. This spec runs the
- * 12-row canonical fixture matrix through both implementations and
- * asserts identical output. The matrix exercises the rule edges
- * specifically (Row 3 defensive past-expiresAt-but-still-ACTIVE,
- * Row 11 grace-vs-grace tier ordering) — the cases random fixtures
- * miss reliably.
+ * Phase 11.3 originally paired this with a MongoDB pipeline-expression
+ * implementation (`buildDeriveTierPipelineExpr`) that wrote the
+ * derived value to `User.tier` / `User.tierExpiresAt` for the legacy
+ * denormalization. Phase 11.5 deleted those legacy fields and the
+ * pipeline-expression mirror; the JS function is now the only
+ * implementation and is called explicitly by `/me` for the display-
+ * only `currentTier` field.
+ *
+ * The 12-row canonical matrix below is preserved verbatim — it locks
+ * the rule edges (Row 3 = ACTIVE-but-past-expiresAt is still active;
+ * Row 11 = both-CANCELLED-in-grace ranks PRO_MAX over PRO).
  */
 
 const NOW = new Date('2026-04-27T12:00:00Z');
@@ -139,29 +127,9 @@ const FIXTURE_MATRIX: FixtureRow[] = [
   },
 ];
 
-beforeAll(async () => {
-  await connectTestMongo();
-  await UserModel.syncIndexes();
-}, 30_000);
-
-afterAll(async () => {
-  await disconnectTestMongo();
-});
-
-beforeEach(async () => {
-  await clearAllCollections();
-});
-
-const baseUser = {
-  dob: new Date('1995-01-01'),
-  declaredState: 'IN-MH',
-  kyc: { status: 'NONE' as const },
-  blocked: { isBlocked: false },
-};
-
-describe('Tier derivation — JS vs MongoDB pipeline contract (12-row matrix)', () => {
+describe('Tier derivation — JS canonical matrix (12 rows)', () => {
   for (const row of FIXTURE_MATRIX) {
-    it(`${row.label}: JS implementation matches expected`, () => {
+    it(row.label, () => {
       const tier = deriveCurrentTier(row.subs, NOW);
       const expiresAt = deriveTierExpiresAt(row.subs, NOW);
       expect(tier).toBe(row.expectedTier);
@@ -172,78 +140,5 @@ describe('Tier derivation — JS vs MongoDB pipeline contract (12-row matrix)', 
         expect(expiresAt?.getTime()).toBe(row.expectedExpiresAt.getTime());
       }
     });
-
-    it(`${row.label}: MongoDB pipeline matches expected (run against in-memory mongo)`, async () => {
-      const userId = new Types.ObjectId();
-      // Seed: insert user with the row's subscriptions[]; force-set
-      // tier/tierExpiresAt to obviously-wrong sentinels so we can
-      // confirm the pipeline writes them.
-      await UserModel.create({
-        _id: userId,
-        phone: `+9198000${String(Math.floor(Math.random() * 100_000_000)).padStart(8, '0')}`,
-        ...baseUser,
-        tier: 'PUBLIC' as const,
-        subscriptions: row.subs,
-      });
-
-      // Run the pipeline directly via updateOne — same shape the
-      // service primitives use.
-      await UserModel.updateOne({ _id: userId }, [
-        {
-          $set: {
-            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: NOW } }),
-            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
-              nowRef: { $literal: NOW },
-            }),
-          },
-        },
-      ]);
-
-      const updated = await UserModel.findById(userId).lean();
-      expect(updated?.tier).toBe(row.expectedTier);
-      if (row.expectedExpiresAt === null) {
-        expect(updated?.tierExpiresAt ?? null).toBeNull();
-      } else {
-        expect(updated?.tierExpiresAt).toBeInstanceOf(Date);
-        expect(updated?.tierExpiresAt?.getTime()).toBe(row.expectedExpiresAt.getTime());
-      }
-    });
   }
-
-  it('JS and pipeline produce identical (tier, tierExpiresAt) on every row', async () => {
-    // Belt-and-braces: even if individual specs above pass, this
-    // explicit pairwise comparison makes drift a single test failure
-    // rather than 12 scattered ones.
-    for (const row of FIXTURE_MATRIX) {
-      const userId = new Types.ObjectId();
-      await UserModel.create({
-        _id: userId,
-        phone: `+9198000${String(Math.floor(Math.random() * 100_000_000)).padStart(8, '0')}`,
-        ...baseUser,
-        tier: 'PUBLIC' as const,
-        subscriptions: row.subs,
-      });
-      await UserModel.updateOne({ _id: userId }, [
-        {
-          $set: {
-            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: NOW } }),
-            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
-              nowRef: { $literal: NOW },
-            }),
-          },
-        },
-      ]);
-      const piped = await UserModel.findById(userId).lean();
-
-      const jsTier = deriveCurrentTier(row.subs, NOW);
-      const jsExpiresAt = deriveTierExpiresAt(row.subs, NOW);
-
-      expect(piped?.tier).toBe(jsTier);
-      const pipedExpiresMs = piped?.tierExpiresAt?.getTime() ?? null;
-      const jsExpiresMs = jsExpiresAt?.getTime() ?? null;
-      expect(pipedExpiresMs).toBe(jsExpiresMs);
-
-      await UserModel.deleteOne({ _id: userId });
-    }
-  });
 });

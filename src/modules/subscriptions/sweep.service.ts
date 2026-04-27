@@ -1,9 +1,5 @@
 import { UserModel } from '../../shared/models/User.model.js';
-import {
-  buildDeriveTierExpiresAtPipelineExpr,
-  buildDeriveTierPipelineExpr,
-  buildSweepFilterPipelineExpr,
-} from './_subscriptions.pipelines.js';
+import { buildSweepFilterPipelineExpr } from './_subscriptions.pipelines.js';
 
 export interface SweepInput {
   clock?: () => Date;
@@ -18,42 +14,36 @@ export interface SweepResult {
 const DEFAULT_BATCH_SIZE = 500;
 
 /**
- * Tier-expiry sweep (Phase 11.3 — multi-sub aware).
+ * Tier-expiry sweep (Phase 11.3 multi-sub aware; Phase 11.5
+ * simplification dropped the legacy tier/tierExpiresAt
+ * derivation step).
  *
  * Walks users that have ANY entry in `subscriptions[]` whose
  * `expiresAt < now`, then runs an aggregation pipeline updateMany
- * that:
- *   1. `$filter`s subscriptions[] to keep only entries with
- *      `expiresAt == null` OR `expiresAt >= now` (matches §A4
- *      sweep predicate).
- *   2. Re-derives `tier` and `tierExpiresAt` from the surviving
- *      array using the same canonical rule the JS
- *      `deriveCurrentTier` implements (drift caught by the
- *      derivation contract spec).
+ * that `$filter`s subscriptions[] to keep only entries with
+ * `expiresAt == null` OR `expiresAt >= now`. The legacy User.tier
+ * + tierExpiresAt fields don't exist anymore (Phase 11.5 deletion);
+ * /me derives a display-only `currentTier` from the array on read.
  *
  * Race-safe properties:
  *   R6 — if a concurrent `onCharged` extends an entry's expiresAt
- *        between the candidate scan and the pipeline write, the
- *        $filter cond evaluates against the doc as it's read for
+ *        between the candidate scan and pipeline write, the
+ *        `$filter` cond evaluates against the doc as it's read for
  *        the update. Extended-expiry entries no longer match
  *        `expiresAt < now` and are kept.
  *   R8 — anomaly users (legacy `tier='PRO'` + empty subscriptions[]
- *        from Phase 11.0 backfill) have NO entries with
- *        `expiresAt < now` to match, so the candidate scan skips
- *        them. Untouched.
+ *        from Phase 11.0 backfill — those legacy fields are now
+ *        gone too) have NO entries with `expiresAt < now`, so the
+ *        candidate scan skips them. Untouched.
  *   Concurrent sweep + sweep — same convergent-state property as
- *   the prior single-tier sweep: the second tick's filter
- *   excludes entries the first tick already removed.
+ *   the prior sweep: the second tick's filter excludes entries the
+ *   first tick already removed.
  */
 export async function sweepExpiredTiers(input: SweepInput = {}): Promise<SweepResult> {
   const clock = input.clock ?? (() => new Date());
   const now = clock();
   const batchSize = Math.max(1, Math.min(10_000, input.batchSize ?? DEFAULT_BATCH_SIZE));
 
-  // Two-step: select candidate _ids whose subscriptions[] has any
-  // expired entry, then bulk-update with the same predicate so a
-  // concurrent sweep can't double-count. The $elemMatch ensures we
-  // only match users with at least one expired entry.
   const candidates = await UserModel.find({
     subscriptions: {
       $elemMatch: {
@@ -73,12 +63,6 @@ export async function sweepExpiredTiers(input: SweepInput = {}): Promise<SweepRe
     {
       $set: {
         subscriptions: buildSweepFilterPipelineExpr({ nowRef: { $literal: now } }),
-      },
-    },
-    {
-      $set: {
-        tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: now } }),
-        tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({ nowRef: { $literal: now } }),
       },
     },
   ]);

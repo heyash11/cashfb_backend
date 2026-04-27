@@ -81,9 +81,16 @@ export interface UserAttrs {
   totalCoinsEarned: number;
   totalVotesCast: number;
   signupBonusGranted: boolean;
-  tier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
   geoBlocked: boolean;
   ageVerified: boolean;
+  /**
+   * Phase 11.5 — JWT force-logout primary mechanism. Bumped via
+   * `scripts/bump-token-versions.ts` at deploy time to invalidate
+   * every existing token. Each issued JWT carries this value in
+   * its claims; the auth middleware compares on every authed
+   * request. Mismatch → TOKEN_VERSION_MISMATCH 401.
+   */
+  tokenVersion: number;
 
   // Subdocs with inner defaults → subdoc materialised → required.
   kyc: UserKyc;
@@ -91,14 +98,13 @@ export interface UserAttrs {
 
   // Optional, set over time.
   lastVoteDate?: string;
-  activeSubscriptionId?: Types.ObjectId;
-  tierExpiresAt?: Date;
   /**
    * Phase 11.0 — parallel-tier subscription state. Defaulted to
    * `[]` at the schema layer so it's always present on read.
-   * Legacy `tier` / `activeSubscriptionId` / `tierExpiresAt`
-   * fields above remain authoritative until Phase 11.5; this
-   * array is read by Phase 11.3+ writers and not yet by /me.
+   * Phase 11.5 deleted the legacy `tier`/`activeSubscriptionId`/
+   * `tierExpiresAt` fields; this array is now the single source
+   * of truth for tier access (read by /me + auth middleware +
+   * vote/posts/custom-rooms via `userCanAccessTier`).
    */
   subscriptions: UserSubscriptionEntry[];
   primaryDeviceFingerprint?: string;
@@ -149,15 +155,10 @@ const UserSchema = new Schema(
     signupBonusGranted: { type: Boolean, default: false },
     lastVoteDate: { type: String, index: true }, // 'YYYY-MM-DD' IST
 
-    // Subscription snapshot
-    tier: {
-      type: String,
-      enum: ['PUBLIC', 'PRO', 'PRO_MAX'],
-      default: 'PUBLIC',
-      index: true,
-    },
-    activeSubscriptionId: { type: Types.ObjectId, ref: 'Subscription' },
-    tierExpiresAt: { type: Date, index: true },
+    // Phase 11.5 — JWT force-logout token version. See UserAttrs
+    // for the rationale + middleware/script wiring.
+    tokenVersion: { type: Number, default: 1, required: true },
+
     // Phase 11.0 — parallel-tier subscription array. See
     // UserSubscriptionEntry for the per-element shape and the
     // writer-side uniqueness contract. `default: []` so reads
@@ -240,10 +241,9 @@ const UserSchema = new Schema(
   baseSchemaOptions,
 );
 
-UserSchema.index({ tier: 1, tierExpiresAt: 1 }); // tier + expiry sweep (legacy single-tier path)
-// Phase 11.0 — multi-tier sweep query path for Phase 11.3+
-// (`subscriptions[].expiresAt < now AND subscriptions[].status = 'ACTIVE'`).
-// Multi-key index over the array fields.
+// Phase 11.5 — legacy {tier, tierExpiresAt} index dropped along
+// with the legacy single-tier fields. Multi-tier sweep uses the
+// array-key index below (Phase 11.0 schema).
 UserSchema.index({ 'subscriptions.tier': 1, 'subscriptions.expiresAt': 1 });
 UserSchema.index({ declaredState: 1, geoBlocked: 1 }); // geo-block check
 UserSchema.index({ 'blocked.isBlocked': 1 }); // block enforcement

@@ -86,12 +86,14 @@ describe('User model — Phase 11.0 subscriptions[] additions', () => {
     expect(indexNames).toContain('subscriptions.tier_1_subscriptions.expiresAt_1');
   });
 
-  it('legacy `tier` field still defaults to PUBLIC and coexists with subscriptions[]', async () => {
+  it('Phase 11.5 — fresh user has subscriptions=[] and tokenVersion=1', async () => {
     const user = await UserModel.create({ ...baseUser, phone: '+919800000006' });
-    expect(user.tier).toBe('PUBLIC');
     expect(user.subscriptions).toEqual([]);
-    // The two are independent until Phase 11.5 reconciles them.
-    expect(user.activeSubscriptionId).toBeUndefined();
+    expect(user.tokenVersion).toBe(1);
+    // Phase 11.5 — legacy fields gone:
+    expect(user).not.toHaveProperty('tier');
+    expect(user).not.toHaveProperty('tierExpiresAt');
+    expect(user).not.toHaveProperty('activeSubscriptionId');
   });
 
   it('subscription entries can include a subscriptionId pointer for audit', async () => {

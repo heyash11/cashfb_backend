@@ -467,7 +467,7 @@ describe('VoteService.getTodayStatus', () => {
 describe('VoteService.castVote — tier authorization', () => {
   it('PUBLIC user voting in PUBLIC succeeds; Vote.tier = PUBLIC', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+    const user = await mkUser({ coinBalance: 3 });
 
     const res = await svc.castVote({
       userId: user._id,
@@ -484,7 +484,7 @@ describe('VoteService.castVote — tier authorization', () => {
 
   it('PUBLIC user voting in PRO → TIER_NOT_ACCESSIBLE; no state change', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+    const user = await mkUser({ coinBalance: 3 });
 
     await expect(
       svc.castVote({
@@ -503,7 +503,7 @@ describe('VoteService.castVote — tier authorization', () => {
 
   it('PUBLIC user voting in PRO_MAX → TIER_NOT_ACCESSIBLE', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+    const user = await mkUser({ coinBalance: 3 });
 
     await expect(
       svc.castVote({
@@ -520,7 +520,6 @@ describe('VoteService.castVote — tier authorization', () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser({
       coinBalance: 3,
-      tier: 'PRO',
       subscriptions: [
         {
           tier: 'PRO',
@@ -548,7 +547,6 @@ describe('VoteService.castVote — tier authorization', () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser({
       coinBalance: 3,
-      tier: 'PRO',
       subscriptions: [
         {
           tier: 'PRO',
@@ -574,7 +572,6 @@ describe('VoteService.castVote — tier authorization', () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser({
       coinBalance: 3,
-      tier: 'PRO_MAX',
       subscriptions: [
         {
           tier: 'PRO_MAX',
@@ -601,7 +598,6 @@ describe('VoteService.castVote — tier authorization', () => {
     const future = new Date('2027-01-01');
     const user = await mkUser({
       coinBalance: 9,
-      tier: 'PRO_MAX',
       subscriptions: [
         { tier: 'PRO', status: 'ACTIVE', expiresAt: future, subscriptionId: new Types.ObjectId() },
         {
@@ -635,7 +631,6 @@ describe('VoteService.castVote — tier authorization', () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const user = await mkUser({
       coinBalance: 9,
-      tier: 'PRO',
       subscriptions: [
         {
           tier: 'PRO',
@@ -684,7 +679,6 @@ describe('VoteService.castVote — tier authorization', () => {
     const past = new Date('2020-01-01');
     const user = await mkUser({
       coinBalance: 3,
-      tier: 'PRO',
       subscriptions: [
         // Cancelled + past expiresAt → no longer active per derivation rule.
         {
@@ -711,7 +705,7 @@ describe('VoteService.castVote — tier authorization', () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     // PUBLIC user with insufficient coins trying to vote in PRO. Both
     // checks would fail; the tier check must surface first.
-    const user = await mkUser({ coinBalance: 0, tier: 'PUBLIC' });
+    const user = await mkUser({ coinBalance: 0 });
 
     await expect(
       svc.castVote({
@@ -728,7 +722,17 @@ describe('VoteService.castVote — tier authorization', () => {
 describe('VoteService.getTodayStatus — tier scoping', () => {
   it('per-tier eligibility: voting in PUBLIC leaves PRO slot open', async () => {
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 6, tier: 'PRO' });
+    const user = await mkUser({
+      coinBalance: 6,
+      subscriptions: [
+        {
+          tier: 'PRO',
+          status: 'ACTIVE',
+          expiresAt: new Date('2027-01-01'),
+          subscriptionId: new Types.ObjectId(),
+        },
+      ],
+    });
 
     await svc.castVote({
       userId: user._id,
@@ -764,7 +768,7 @@ describe('VoteService.getTodayStatus — tier scoping', () => {
     // ask "does this user have a vote pending for PRO_MAX?" without
     // also doing an authorization check.
     const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
-    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+    const user = await mkUser({ coinBalance: 3 });
 
     const status = await svc.getTodayStatus(user._id, 'PRO_MAX');
     expect(status.canVote).toBe(true);
@@ -772,29 +776,8 @@ describe('VoteService.getTodayStatus — tier scoping', () => {
   });
 });
 
-// ---------------------------------------------------------------
-// Phase 11.1 — tierGrantsAccess truth table (helper)
-// ---------------------------------------------------------------
-
-describe('tierGrantsAccess (Phase 11.1 hierarchical gate)', () => {
-  it('PUBLIC user grants only PUBLIC', async () => {
-    const { tierGrantsAccess } = await import('../../shared/models/_tier.js');
-    expect(tierGrantsAccess('PUBLIC', 'PUBLIC')).toBe(true);
-    expect(tierGrantsAccess('PUBLIC', 'PRO')).toBe(false);
-    expect(tierGrantsAccess('PUBLIC', 'PRO_MAX')).toBe(false);
-  });
-
-  it('PRO user grants PRO and PUBLIC', async () => {
-    const { tierGrantsAccess } = await import('../../shared/models/_tier.js');
-    expect(tierGrantsAccess('PRO', 'PUBLIC')).toBe(true);
-    expect(tierGrantsAccess('PRO', 'PRO')).toBe(true);
-    expect(tierGrantsAccess('PRO', 'PRO_MAX')).toBe(false);
-  });
-
-  it('PRO_MAX user grants all three', async () => {
-    const { tierGrantsAccess } = await import('../../shared/models/_tier.js');
-    expect(tierGrantsAccess('PRO_MAX', 'PUBLIC')).toBe(true);
-    expect(tierGrantsAccess('PRO_MAX', 'PRO')).toBe(true);
-    expect(tierGrantsAccess('PRO_MAX', 'PRO_MAX')).toBe(true);
-  });
-});
+// Phase 11.5 — tierGrantsAccess matrix removed. The deprecated
+// helper is gone (it encoded hierarchical gating, which is wrong
+// under the strict subscription model). The Phase 11.4
+// `userCanAccessTier` helper has its own 12-row matrix in
+// _user-can-access-tier.spec.ts.

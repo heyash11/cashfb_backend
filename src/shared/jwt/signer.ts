@@ -10,13 +10,19 @@ const ISSUER = 'cashfb';
 export const ACCESS_TTL_SEC = 15 * 60; // 15 min
 export const REFRESH_TTL_SEC = 30 * 24 * 60 * 60; // 30 days
 
-type Tier = 'PUBLIC' | 'PRO' | 'PRO_MAX';
 type JoseKey = CryptoKey | KeyObject;
 
+/**
+ * Phase 11.5 — `tier` claim dropped (auth no longer reads tier from
+ * the token; reads `User.subscriptions[]` on each request via
+ * `userCanAccessTier`). `tokenVersion` added — compared against
+ * `User.tokenVersion` on every authed request to support
+ * deploy-time bulk session invalidation.
+ */
 export interface AccessClaims {
   sub: string;
-  tier: Tier;
   jti: string;
+  tokenVersion: number;
   /** Unix seconds at issuance. Populated by `jose` via setIssuedAt() and
    *  extracted by verifyAccessToken so force-logout middleware can
    *  compare against the per-user cutoff in Redis. */
@@ -27,6 +33,7 @@ export interface RefreshClaims {
   sub: string;
   jti: string;
   family: string;
+  tokenVersion: number;
   /** Unix seconds at issuance. Same semantics as AccessClaims.iat —
    *  refresh endpoint uses it against the force-logout cutoff. */
   iat: number;
@@ -116,7 +123,7 @@ export type SignRefreshInput = Omit<RefreshClaims, 'iat'>;
 
 export async function signAccessToken(claims: SignAccessInput): Promise<string> {
   accessIssued += 1;
-  return new SignJWT({ tier: claims.tier })
+  return new SignJWT({ tokenVersion: claims.tokenVersion })
     .setProtectedHeader({ alg: JWT_ALG, kid: KEY_ID })
     .setSubject(claims.sub)
     .setJti(claims.jti)
@@ -128,7 +135,7 @@ export async function signAccessToken(claims: SignAccessInput): Promise<string> 
 
 export async function signRefreshToken(claims: SignRefreshInput): Promise<string> {
   refreshIssued += 1;
-  return new SignJWT({ family: claims.family })
+  return new SignJWT({ family: claims.family, tokenVersion: claims.tokenVersion })
     .setProtectedHeader({ alg: JWT_ALG, kid: KEY_ID })
     .setSubject(claims.sub)
     .setJti(claims.jti)
@@ -138,6 +145,13 @@ export async function signRefreshToken(claims: SignRefreshInput): Promise<string
     .sign(requirePrivateKey());
 }
 
+/**
+ * Phase 11.5 — `tokenVersion` is REQUIRED on the JWT payload. A
+ * pre-11.5 token (no `tokenVersion` claim) parses as `tokenVersion: 0`
+ * (typeof undefined → defaults to 0 in the comparison logic in the
+ * auth middleware). User.tokenVersion defaults to 1, so the
+ * mismatch correctly forces re-login on stale tokens.
+ */
 export async function verifyAccessToken(token: string): Promise<AccessClaims> {
   const { payload } = await jwtVerify(token, requirePublicKey(), {
     algorithms: [JWT_ALG],
@@ -145,11 +159,9 @@ export async function verifyAccessToken(token: string): Promise<AccessClaims> {
   });
   if (!payload.sub || !payload.jti) throw new Error('access token missing sub/jti');
   if (typeof payload.iat !== 'number') throw new Error('access token missing iat');
-  const tier = payload['tier'];
-  if (tier !== 'PUBLIC' && tier !== 'PRO' && tier !== 'PRO_MAX') {
-    throw new Error('access token has invalid tier claim');
-  }
-  return { sub: payload.sub, jti: payload.jti, tier, iat: payload.iat };
+  const rawTokenVersion = payload['tokenVersion'];
+  const tokenVersion = typeof rawTokenVersion === 'number' ? rawTokenVersion : 0;
+  return { sub: payload.sub, jti: payload.jti, tokenVersion, iat: payload.iat };
 }
 
 export async function verifyRefreshToken(token: string): Promise<RefreshClaims> {
@@ -161,7 +173,9 @@ export async function verifyRefreshToken(token: string): Promise<RefreshClaims> 
   if (typeof payload.iat !== 'number') throw new Error('refresh token missing iat');
   const family = payload['family'];
   if (typeof family !== 'string') throw new Error('refresh token missing family claim');
-  return { sub: payload.sub, jti: payload.jti, family, iat: payload.iat };
+  const rawTokenVersion = payload['tokenVersion'];
+  const tokenVersion = typeof rawTokenVersion === 'number' ? rawTokenVersion : 0;
+  return { sub: payload.sub, jti: payload.jti, family, tokenVersion, iat: payload.iat };
 }
 
 /**

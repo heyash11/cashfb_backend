@@ -15,10 +15,10 @@ import { AppConfigRepository } from '../../shared/repositories/AppConfig.reposit
 import { SubscriptionRepository } from '../../shared/repositories/Subscription.repository.js';
 import { SubscriptionPaymentRepository } from '../../shared/repositories/SubscriptionPayment.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
-import {
-  buildDeriveTierExpiresAtPipelineExpr,
-  buildDeriveTierPipelineExpr,
-} from './_subscriptions.pipelines.js';
+// Phase 11.5 — pipeline derivation builders no longer imported.
+// Subscription writes mutate `subscriptions[]` only; the legacy
+// User.tier/tierExpiresAt fields are gone. /me's display-only
+// `currentTier` derives from the array via `deriveCurrentTier`.
 
 export type Tier = 'PRO' | 'PRO_MAX';
 
@@ -390,7 +390,7 @@ export class SubscriptionService {
           // for this tier + derive denormalized tier/tierExpiresAt
           // in a single pipeline update. Replaces the legacy
           // `$set: { tier, tierExpiresAt }` flat write.
-          await this.upsertSubscriptionEntryAndDeriveTier(
+          await this.upsertSubscriptionEntry(
             user._id,
             sub.tier,
             'ACTIVE',
@@ -450,12 +450,7 @@ export class SubscriptionService {
     try {
       await session.withTransaction(async () => {
         await this.subRepo.updateOne({ _id: sub._id }, { $set: { status: 'HALTED' } }, { session });
-        await this.markEntryExpiredImmediatelyBySubIdAndDeriveTier(
-          sub.userId,
-          sub._id,
-          now,
-          session,
-        );
+        await this.markEntryExpiredImmediatelyBySubId(sub.userId, sub._id, now, session);
       });
     } finally {
       await session.endSession();
@@ -493,14 +488,9 @@ export class SubscriptionService {
           { session },
         );
         if (atCycleEnd) {
-          await this.markEntryCancelledBySubIdAndDeriveTier(sub.userId, sub._id, session);
+          await this.markEntryCancelledBySubId(sub.userId, sub._id, session);
         } else {
-          await this.markEntryExpiredImmediatelyBySubIdAndDeriveTier(
-            sub.userId,
-            sub._id,
-            now,
-            session,
-          );
+          await this.markEntryExpiredImmediatelyBySubId(sub.userId, sub._id, now, session);
         }
       });
     } finally {
@@ -522,15 +512,20 @@ export class SubscriptionService {
    * `tier`. Pipeline filters out any existing entry of the same
    * tier (replacement semantics — re-subscribe-after-cancellation
    * with a different subId replaces the old entry, R5 race), then
-   * pushes the new entry, then derives `tier` + `tierExpiresAt`.
+   * pushes the new entry.
    *
-   * Single pipeline update — atomic at document level. Two
-   * concurrent activations for different tiers (R1) serialize
+   * Phase 11.5 — stage-2 derivation removed (legacy User.tier and
+   * tierExpiresAt fields no longer exist). Single-stage pipeline:
+   * mutate the array. The derivation rule still lives in _tier.ts
+   * for /me's currentTier display field; auth uses
+   * `userCanAccessTier` which reads the array directly.
+   *
+   * Two concurrent activations for different tiers (R1) serialize
    * naturally; each filters its own tier and pushes its own entry.
    * Idempotent on replay (R4): re-running with the same
    * (tier, subscriptionId) produces identical state.
    */
-  private async upsertSubscriptionEntryAndDeriveTier(
+  private async upsertSubscriptionEntry(
     userId: Types.ObjectId,
     tier: SubscribableTier,
     status: 'ACTIVE' | 'CANCELLED',
@@ -564,27 +559,21 @@ export class SubscriptionService {
             },
           },
         },
-        {
-          $set: {
-            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: this.clock() } }),
-            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
-              nowRef: { $literal: this.clock() },
-            }),
-          },
-        },
       ],
       { session },
     );
   }
 
   /**
-   * Phase 11.3 — mark the entry whose `subscriptionId` matches as
-   * CANCELLED, preserving `expiresAt` (grace period). Pipeline
-   * `$map`-runs over subscriptions[] flipping status only on the
-   * matching entry. Late cancellation for a replaced subId (R2 race)
-   * becomes a no-op since no entry matches the input subId.
+   * Mark the entry whose `subscriptionId` matches as CANCELLED,
+   * preserving `expiresAt` (grace period). `$map`-runs over
+   * subscriptions[] flipping status only on the matching entry.
+   * Late cancellation for a replaced subId (R2 race) becomes a
+   * no-op since no entry matches the input subId.
+   *
+   * Phase 11.5 — stage-2 derivation removed.
    */
-  private async markEntryCancelledBySubIdAndDeriveTier(
+  private async markEntryCancelledBySubId(
     userId: Types.ObjectId,
     subscriptionId: Types.ObjectId,
     session: ClientSession,
@@ -609,28 +598,20 @@ export class SubscriptionService {
             },
           },
         },
-        {
-          $set: {
-            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: this.clock() } }),
-            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
-              nowRef: { $literal: this.clock() },
-            }),
-          },
-        },
       ],
       { session },
     );
   }
 
   /**
-   * Phase 11.3 — immediate-expiry variant of cancellation: marks the
-   * matching entry CANCELLED AND sets its `expiresAt` to `now`. The
-   * next sweep pass $pulls the entry; the derivation here treats it
-   * as already-non-active (CANCELLED with expiresAt <= now per the
-   * canonical rule). Used by `onHalted` and by `onCancelled` with
-   * `atCycleEnd=false`.
+   * Immediate-expiry variant of cancellation: marks the matching
+   * entry CANCELLED AND sets its `expiresAt` to `now`. The next
+   * sweep pass $pulls the entry. Used by `onHalted` and by
+   * `onCancelled` with `atCycleEnd=false`.
+   *
+   * Phase 11.5 — stage-2 derivation removed.
    */
-  private async markEntryExpiredImmediatelyBySubIdAndDeriveTier(
+  private async markEntryExpiredImmediatelyBySubId(
     userId: Types.ObjectId,
     subscriptionId: Types.ObjectId,
     now: Date,
@@ -656,14 +637,6 @@ export class SubscriptionService {
                 },
               },
             },
-          },
-        },
-        {
-          $set: {
-            tier: buildDeriveTierPipelineExpr({ nowRef: { $literal: this.clock() } }),
-            tierExpiresAt: buildDeriveTierExpiresAtPipelineExpr({
-              nowRef: { $literal: this.clock() },
-            }),
           },
         },
       ],

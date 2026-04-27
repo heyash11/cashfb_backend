@@ -1,22 +1,43 @@
 import type { Types } from 'mongoose';
 import { ForbiddenError, NotFoundError } from '../../shared/errors/AppError.js';
 import {
-  SubscriptionModel,
-  type SubscriptionAttrs,
-} from '../../shared/models/Subscription.model.js';
-import { UserModel, type UserAttrs } from '../../shared/models/User.model.js';
+  UserModel,
+  type UserAttrs,
+  type UserSubscriptionEntry,
+} from '../../shared/models/User.model.js';
+import { deriveCurrentTier, type Tier } from '../../shared/models/_tier.js';
 
 /**
- * `GET /api/v1/me` response payload (Phase 9.6). Identity-only —
- * the privacy posture documented in the chunk plan locks the
- * shape: no DOB, no declaredState, no email, no PAN ciphertext, no
- * DPDP-internal flags, no Mongoose internals. See controller for
- * the projection that enforces this at the query layer.
+ * `GET /api/v1/me` response payload.
+ *
+ * Phase 11.5 — Shape change (BREAKING vs Phase 9.6):
+ *   REMOVED: `tier` (singular) — replaced by `currentTier`.
+ *   REMOVED: `subscription` (singular) — replaced by `subscriptions[]`.
+ *   ADDED:   `subscriptions: SubscriptionEntry[]` — full array from
+ *            `User.subscriptions[]` (Phase 11.0 schema). Empty array
+ *            means PUBLIC-only.
+ *   ADDED:   `currentTier: Tier` — derived via `deriveCurrentTier`
+ *            (highest active tier, with grace-period rule). Display-
+ *            only convenience for UI header chip; subscriptions[]
+ *            is the truth for access decisions.
+ *
+ * The single-tier convenience fields led to the original §A12 bug
+ * (PRO_MAX-only being indistinguishable from PRO+PRO_MAX from one
+ * number). The array is now authoritative.
+ *
+ * Privacy posture unchanged: no DOB, no declaredState, no email,
+ * no PAN ciphertext, no DPDP-internal flags.
  */
+export interface MeSubscriptionEntry {
+  tier: 'PRO' | 'PRO_MAX';
+  status: 'ACTIVE' | 'CANCELLED' | 'EXPIRED';
+  /** ISO 8601 — entry's expiresAt if set; absent otherwise. */
+  expiresAt?: string;
+}
+
 export interface MeProfile {
   id: string;
   phone: string;
-  tier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
   coinBalance: number;
   displayName?: string;
   avatarUrl?: string;
@@ -25,74 +46,67 @@ export interface MeProfile {
     /**
      * Last four digits of the verified PAN. Surfaced ONLY when
      * `kyc.status === 'VERIFIED'` AND a value is actually stored.
-     * Never surfaced for NONE/PENDING/REJECTED — that would leak
-     * historical state of revoked verifications.
      */
     panLast4?: string;
   };
-  subscription?: {
-    status: 'ACTIVE' | 'CANCELLED' | 'EXPIRED';
-    /** ISO 8601 — `User.tierExpiresAt` if set; absent otherwise. */
-    expiresAt?: string;
-  };
+  /**
+   * Phase 11.5 — full subscriptions array. Empty = PUBLIC-only.
+   */
+  subscriptions: MeSubscriptionEntry[];
+  /**
+   * Phase 11.5 — derived "headline tier" for UI display. Same rule
+   * as `deriveCurrentTier`: PRO_MAX wins → PRO wins → PUBLIC. This
+   * is a derived view, NOT a stored field. Authorization decisions
+   * MUST go through `userCanAccessTier(subscriptions, requestedTier)`
+   * — never through this convenience.
+   */
+  currentTier: Tier;
 }
 
 /**
- * Subset of User-row fields the profile service needs. Pulled via
- * explicit projection at the query layer so PAN ciphertext + DPDP
- * internals never enter memory.
+ * Subset of User-row fields the profile service needs.
  */
 type UserProjection = Pick<
   UserAttrs,
   | '_id'
   | 'phone'
-  | 'tier'
   | 'coinBalance'
   | 'displayName'
   | 'avatarUrl'
   | 'kyc'
   | 'blocked'
   | 'anonymizedAt'
-  | 'activeSubscriptionId'
-  | 'tierExpiresAt'
+  | 'subscriptions'
 >;
 
 export interface UserProfileServiceDeps {
   userModel?: typeof UserModel;
-  subscriptionModel?: typeof SubscriptionModel;
   clock?: () => Date;
 }
 
 export class UserProfileService {
   private readonly userModel: typeof UserModel;
-  private readonly subscriptionModel: typeof SubscriptionModel;
   private readonly clock: () => Date;
 
   constructor(deps: UserProfileServiceDeps = {}) {
     this.userModel = deps.userModel ?? UserModel;
-    this.subscriptionModel = deps.subscriptionModel ?? SubscriptionModel;
     this.clock = deps.clock ?? (() => new Date());
   }
 
   /**
    * Hydrate the authenticated user's identity for UI rendering.
    *
-   * Auth middleware (`requireUser`) has already verified the JWT +
-   * checked the force-logout denylist in Redis, but does NOT read
-   * the User document (Phase 9 Chunk 4 §A5 verdict — keeps requireUser
-   * Mongo-free). `/me` is the first surface that hydrates the row;
-   * we re-check anonymizedAt and blocked here as defense-in-depth
-   * even though they should already be filtered upstream.
+   * Phase 11.5 — `requireUser` middleware now fetches the User row
+   * during JWT verification (for tokenVersion check). The
+   * controller could pass `req.user.subscriptions` directly to save
+   * a duplicate fetch, but `/me` still needs phone, displayName,
+   * avatar, kyc, etc. — fields that aren't on `req.user`. So we
+   * pay the second read here, with a tight projection.
    */
   async getMe(userId: Types.ObjectId): Promise<MeProfile> {
-    // Explicit projection — PAN ciphertext (panCt/panIv/panTag/panDekEnc),
-    // DOB, declaredState, email, referralCode, deletedAt, erasureHold,
-    // and Mongoose internals (__v) never enter memory. `.lean()` gives
-    // us a plain JS object + ~40% perf vs hydrated docs at this volume.
     const user = (await this.userModel
       .findById(userId, {
         phone: 1,
-        tier: 1,
         coinBalance: 1,
         displayName: 1,
         avatarUrl: 1,
@@ -100,8 +114,7 @@ export class UserProfileService {
         'kyc.panLast4': 1,
         blocked: 1,
         anonymizedAt: 1,
-        activeSubscriptionId: 1,
-        tierExpiresAt: 1,
+        subscriptions: 1,
       })
       .lean()) as UserProjection | null;
 
@@ -109,29 +122,22 @@ export class UserProfileService {
       throw new NotFoundError('User not found');
     }
 
-    // Defense-in-depth: anonymized users SHOULD have invalid tokens
-    // already (DPDP erasure request flow revokes sessions + writes
-    // force-logout cutoff), but if a stale-but-still-live token
-    // somehow makes it past requireUser, surface 404 here. Same
-    // posture as auth.service.ts verifyLoginOtp.
     if (user.anonymizedAt) {
       throw new NotFoundError('User not found');
     }
 
-    // Defense-in-depth: blocked users may still hold valid tokens
-    // (block doesn't auto-revoke). Surface 403 USER_BLOCKED.
     if (user.blocked?.isBlocked === true) {
       throw new ForbiddenError('USER_BLOCKED', 'Account is blocked');
     }
 
-    const subscription = user.activeSubscriptionId
-      ? await this.resolveSubscription(user.activeSubscriptionId, user.tierExpiresAt)
-      : undefined;
+    const subs = user.subscriptions ?? [];
+    const now = this.clock();
+    const subscriptions = subs.map((entry) => mapEntry(entry));
+    const currentTier = deriveCurrentTier(subs, now);
 
     const profile: MeProfile = {
       id: user._id.toHexString(),
       phone: user.phone,
-      tier: user.tier,
       coinBalance: user.coinBalance,
       kyc: {
         status: user.kyc.status,
@@ -141,75 +147,19 @@ export class UserProfileService {
       },
       ...(user.displayName ? { displayName: user.displayName } : {}),
       ...(user.avatarUrl ? { avatarUrl: user.avatarUrl } : {}),
-      ...(subscription ? { subscription } : {}),
+      subscriptions,
+      currentTier,
     };
 
     return profile;
   }
+}
 
-  /**
-   * Map the 8-value backend `Subscription.status` enum down to the
-   * 3-value client enum (`ACTIVE | CANCELLED | EXPIRED`) the UI
-   * cares about, with a grace-period refinement on `CANCELLED`.
-   *
-   * Mapping (§A1 verdict):
-   *   ACTIVE                                       → ACTIVE
-   *   CANCELLED with tierExpiresAt > now()         → ACTIVE   ← grace
-   *   CANCELLED with tierExpiresAt <= now()        → CANCELLED
-   *   HALTED                                       → CANCELLED
-   *   PAUSED                                       → CANCELLED
-   *   COMPLETED                                    → EXPIRED
-   *   CREATED / AUTHENTICATED / PENDING            → undefined (omit)
-   *
-   * Why grace-period maps to ACTIVE: the user's *functional* state
-   * matters for UI, not Razorpay's internal lifecycle. A
-   * cancelled-but-still-in-grace user is functionally Pro until the
-   * grace ends. Returning ACTIVE keeps Pro features unlocked; the
-   * `expiresAt` ISO timestamp lets the client render "expires on X"
-   * messaging.
-   *
-   * Returns `undefined` to signal "omit the subscription block
-   * entirely" — used for not-yet-usable subscription states
-   * (CREATED/AUTHENTICATED/PENDING) so the UI doesn't render a
-   * misleading "you have a subscription!" hint before the first
-   * charge succeeds.
-   */
-  private async resolveSubscription(
-    subscriptionId: Types.ObjectId,
-    tierExpiresAt: Date | undefined,
-  ): Promise<MeProfile['subscription'] | undefined> {
-    const sub = await this.subscriptionModel
-      .findById(subscriptionId, { status: 1 })
-      .lean<Pick<SubscriptionAttrs, '_id' | 'status'> | null>();
-    if (!sub) return undefined;
-
-    let mapped: 'ACTIVE' | 'CANCELLED' | 'EXPIRED' | undefined;
-    switch (sub.status) {
-      case 'ACTIVE':
-        mapped = 'ACTIVE';
-        break;
-      case 'CANCELLED':
-        mapped =
-          tierExpiresAt && tierExpiresAt.getTime() > this.clock().getTime()
-            ? 'ACTIVE'
-            : 'CANCELLED';
-        break;
-      case 'HALTED':
-      case 'PAUSED':
-        mapped = 'CANCELLED';
-        break;
-      case 'COMPLETED':
-        mapped = 'EXPIRED';
-        break;
-      // CREATED / AUTHENTICATED / PENDING → omit (not yet usable)
-      default:
-        mapped = undefined;
-    }
-
-    if (!mapped) return undefined;
-    return {
-      status: mapped,
-      ...(tierExpiresAt ? { expiresAt: tierExpiresAt.toISOString() } : {}),
-    };
-  }
+function mapEntry(entry: UserSubscriptionEntry): MeSubscriptionEntry {
+  const out: MeSubscriptionEntry = {
+    tier: entry.tier,
+    status: entry.status,
+  };
+  if (entry.expiresAt) out.expiresAt = entry.expiresAt.toISOString();
+  return out;
 }

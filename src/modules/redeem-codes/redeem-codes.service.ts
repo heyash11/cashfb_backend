@@ -19,7 +19,6 @@ import { computeTds194BA } from '../../shared/services/tds.js';
 export interface ListForPostInput {
   postId: Types.ObjectId;
   userId: Types.ObjectId;
-  userTier: 'PUBLIC' | 'PRO' | 'PRO_MAX';
 }
 
 export interface ListForPostItem {

@@ -24,7 +24,7 @@ function makeUser(overrides: Partial<UserAttrs> = {}): UserAttrs {
     totalCoinsEarned: 50,
     totalVotesCast: 3,
     signupBonusGranted: true,
-    tier: 'PRO',
+    tokenVersion: 1,
     geoBlocked: false,
     ageVerified: true,
     kyc: {

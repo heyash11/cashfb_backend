@@ -14,7 +14,15 @@ import { ERASURE_CONFLICT } from '../users/users.erasure.service.js';
 
 export interface AdminUsersListFilter {
   search?: string;
-  tier?: UserAttrs['tier'];
+  /**
+   * Phase 11.5 — tier filter translates to `subscriptions[]` query:
+   *   'PUBLIC'  → users with empty subscriptions[]
+   *   'PRO'     → users with an active PRO entry in subscriptions[]
+   *   'PRO_MAX' → users with an active PRO_MAX entry
+   * The admin UI filters on the user's subscription state, not on
+   * any single denormalized field (which no longer exists).
+   */
+  tier?: 'PUBLIC' | 'PRO' | 'PRO_MAX';
   blocked?: boolean;
 }
 
@@ -71,7 +79,11 @@ export class AdminUsersService {
 
   async list(filter: AdminUsersListFilter, limit = 50): Promise<AdminUsersListResult> {
     const q: FilterQuery<UserAttrs> = {};
-    if (filter.tier) q.tier = filter.tier;
+    if (filter.tier === 'PUBLIC') {
+      q.subscriptions = { $size: 0 };
+    } else if (filter.tier === 'PRO' || filter.tier === 'PRO_MAX') {
+      q['subscriptions.tier'] = filter.tier;
+    }
     if (typeof filter.blocked === 'boolean') q['blocked.isBlocked'] = filter.blocked;
     if (filter.search) {
       // Narrow search: exact phone, phone prefix, or exact email.

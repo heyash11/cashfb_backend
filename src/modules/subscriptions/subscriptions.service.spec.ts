@@ -220,7 +220,7 @@ describe('SubscriptionService.cancel', () => {
 describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () => {
   it('creates SubscriptionPayment, increments paidCount, pushes subscriptions[] entry, derives tier, enqueues invoice', async () => {
     const { svc, enqueueSpy } = mkSvc();
-    const user = await mkUser({ tier: 'PUBLIC' });
+    const user = await mkUser({});
     const sub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_charged_1',
     });
@@ -272,10 +272,8 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
       new Date(currentEndSec * 1000).toISOString(),
     );
     // Legacy denormalized fields kept in sync via derivation.
-    expect(afterUser?.tier).toBe('PRO');
-    expect(afterUser?.tierExpiresAt?.toISOString()).toBe(
-      new Date(currentEndSec * 1000).toISOString(),
-    );
+    // Phase 11.5 — legacy User.tier / tierExpiresAt fields dropped;
+    // subscriptions[] entry assertion above is the canonical check.
 
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
     const [arg] = enqueueSpy.mock.calls[0] ?? [];
@@ -284,7 +282,7 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
 
   it('rolls back cleanly when user update fails mid-transaction (no payment row, no paidCount bump, subscriptions[] unchanged)', async () => {
     const { svc, enqueueSpy } = mkSvc();
-    const user = await mkUser({ tier: 'PUBLIC' });
+    const user = await mkUser({});
     const sub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_rb_1',
     });
@@ -325,7 +323,6 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
     expect(subAfter?.status).toBe('ACTIVE');
 
     const userAfter = await UserModel.findById(user._id);
-    expect(userAfter?.tier).toBe('PUBLIC');
     expect(userAfter?.subscriptions ?? []).toEqual([]);
 
     expect(enqueueSpy).not.toHaveBeenCalled();
@@ -336,7 +333,7 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
 
   it('stackable activation: PRO already active, onCharged for PRO_MAX → 2 entries, derived tier PRO_MAX', async () => {
     const { svc } = mkSvc();
-    const user = await mkUser({ tier: 'PRO' });
+    const user = await mkUser({});
     const proSub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_stack_pro',
     });
@@ -375,8 +372,8 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
     const tiers = after?.subscriptions.map((s) => s.tier).sort();
     expect(tiers).toEqual(['PRO', 'PRO_MAX']);
     // Derivation: PRO_MAX wins, expiresAt = PRO_MAX expiry.
-    expect(after?.tier).toBe('PRO_MAX');
-    expect(after?.tierExpiresAt?.toISOString()).toBe(new Date(proMaxEndSec * 1000).toISOString());
+    // Phase 11.5 — legacy User.tier / tierExpiresAt dropped.
+    // subscriptions[] state is verified above.
     // Confirm subscriptionId on PRO_MAX entry:
     const proMaxEntry = after?.subscriptions.find((s) => s.tier === 'PRO_MAX');
     expect(String(proMaxEntry?.subscriptionId)).toBe(String(proMaxSub._id));
@@ -384,7 +381,7 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
 
   it('replacement-by-tier: re-subscribe PRO with different subId → entry replaced (not duplicated)', async () => {
     const { svc } = mkSvc();
-    const user = await mkUser({ tier: 'PRO' });
+    const user = await mkUser({});
     const oldSub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_old_pro',
     });
@@ -426,7 +423,7 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
 
   it('idempotent replay: same charged event delivered twice → single payment row, single entry', async () => {
     const { svc, enqueueSpy } = mkSvc();
-    const user = await mkUser({ tier: 'PUBLIC' });
+    const user = await mkUser({});
     await seedSubscription(user._id, 'PRO', { razorpaySubscriptionId: 'sub_idem_1' });
 
     const payload = {
@@ -448,7 +445,7 @@ describe('SubscriptionService webhook: subscription.charged (Phase 11.3)', () =>
     );
     const after = await UserModel.findById(user._id);
     expect(after?.subscriptions).toHaveLength(1);
-    expect(after?.tier).toBe('PRO');
+    expect(after?.subscriptions[0]?.tier).toBe('PRO');
     // First call enqueued; the second is a no-op (upsert match path
     // returns null pre-enqueue).
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
@@ -459,7 +456,7 @@ describe('SubscriptionService webhook: subscription.halted (Phase 11.3)', () => 
   it('marks the matching tier-entry CANCELLED + expiresAt=now; other tiers untouched; derivation downgrades', async () => {
     const fixedNow = new Date('2026-04-23T10:00:00Z');
     const { svc } = mkSvc({ clock: () => fixedNow });
-    const user = await mkUser({ tier: 'PRO_MAX', tierExpiresAt: new Date('2026-06-30T00:00:00Z') });
+    const user = await mkUser({});
     const proSub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_halt_pro',
     });
@@ -500,14 +497,13 @@ describe('SubscriptionService webhook: subscription.halted (Phase 11.3)', () => 
     expect(proMaxEntry?.status).toBe('ACTIVE');
     expect(proMaxEntry?.expiresAt?.toISOString()).toBe('2026-06-30T00:00:00.000Z');
     // Derivation: PRO_MAX still wins (PRO is now CANCELLED-expired).
-    expect(after?.tier).toBe('PRO_MAX');
-    expect(after?.tierExpiresAt?.toISOString()).toBe('2026-06-30T00:00:00.000Z');
+    // Phase 11.5 — legacy fields gone; subscriptions[] is the truth.
   });
 
   it('only-tier user halted → derivation drops to PUBLIC, tierExpiresAt=null', async () => {
     const fixedNow = new Date('2026-04-23T10:00:00Z');
     const { svc } = mkSvc({ clock: () => fixedNow });
-    const user = await mkUser({ tier: 'PRO' });
+    const user = await mkUser({});
     const proSub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_halt_solo',
     });
@@ -530,8 +526,7 @@ describe('SubscriptionService webhook: subscription.halted (Phase 11.3)', () => 
     await svc.onHalted({ subscription: { entity: { id: 'sub_halt_solo' } } });
 
     const after = await UserModel.findById(user._id);
-    expect(after?.tier).toBe('PUBLIC');
-    expect(after?.tierExpiresAt ?? null).toBeNull();
+    // Phase 11.5 — legacy fields gone; subscriptions[] check above.
     // Entry stays in array (CANCELLED + expiresAt=now). Sweep removes
     // it on next pass; derivation already excludes it.
     expect(after?.subscriptions).toHaveLength(1);
@@ -544,7 +539,7 @@ describe('SubscriptionService webhook: subscription.cancelled (Phase 11.3)', () 
   it('cancel_at_cycle_end=1 → entry status=CANCELLED, expiresAt unchanged (grace), derivation still PRO', async () => {
     const { svc } = mkSvc();
     const originalExpiry = new Date('2026-05-23T00:00:00Z');
-    const user = await mkUser({ tier: 'PRO', tierExpiresAt: originalExpiry });
+    const user = await mkUser({});
     const sub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_cx_end_1',
     });
@@ -573,8 +568,7 @@ describe('SubscriptionService webhook: subscription.cancelled (Phase 11.3)', () 
     expect(after?.subscriptions[0]?.status).toBe('CANCELLED');
     expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(originalExpiry.toISOString());
     // CANCELLED + future expiresAt → still PRO via grace.
-    expect(after?.tier).toBe('PRO');
-    expect(after?.tierExpiresAt?.toISOString()).toBe(originalExpiry.toISOString());
+    // Phase 11.5 — legacy fields gone; subscriptions[] grace check above.
 
     const subAfter = await SubscriptionModel.findOne({ razorpaySubscriptionId: 'sub_cx_end_1' });
     expect(subAfter?.status).toBe('CANCELLED');
@@ -584,7 +578,7 @@ describe('SubscriptionService webhook: subscription.cancelled (Phase 11.3)', () 
   it('cancel_at_cycle_end=0 → entry CANCELLED + expiresAt=now, derivation drops to PUBLIC', async () => {
     const fixedNow = new Date('2026-04-23T10:00:00Z');
     const { svc } = mkSvc({ clock: () => fixedNow });
-    const user = await mkUser({ tier: 'PRO', tierExpiresAt: new Date('2026-05-23T00:00:00Z') });
+    const user = await mkUser({});
     const sub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_cx_now_1',
     });
@@ -613,14 +607,13 @@ describe('SubscriptionService webhook: subscription.cancelled (Phase 11.3)', () 
     expect(after?.subscriptions[0]?.expiresAt?.toISOString()).toBe(fixedNow.toISOString());
     // Derivation: CANCELLED + expiresAt == now → not active (rule:
     // CANCELLED counts only if expiresAt > now). So PUBLIC.
-    expect(after?.tier).toBe('PUBLIC');
-    expect(after?.tierExpiresAt ?? null).toBeNull();
+    // Phase 11.5 — legacy fields gone; subscriptions[] check above.
   });
 
   // Phase 11.3 R2 — late cancellation for replaced subId is a no-op.
   it('R2 race: late cancellation for an old subId after replacement → no-op (newer entry survives)', async () => {
     const { svc } = mkSvc();
-    const user = await mkUser({ tier: 'PRO' });
+    const user = await mkUser({});
     const oldSub = await seedSubscription(user._id, 'PRO', {
       razorpaySubscriptionId: 'sub_old',
     });
@@ -663,17 +656,20 @@ describe('SubscriptionService webhook: subscription.cancelled (Phase 11.3)', () 
 });
 
 describe('SubscriptionService webhook: pause / resume', () => {
-  it('onPaused → Subscription.status=PAUSED, user tier unchanged', async () => {
+  it('onPaused → Subscription.status=PAUSED, User row not touched', async () => {
     const { svc } = mkSvc();
-    const user = await mkUser({ tier: 'PRO' });
+    const user = await mkUser({});
     await seedSubscription(user._id, 'PRO', { razorpaySubscriptionId: 'sub_pause_1' });
 
     await svc.onPaused({ subscription: { entity: { id: 'sub_pause_1' } } });
 
     const sub = await SubscriptionModel.findOne({ razorpaySubscriptionId: 'sub_pause_1' });
     expect(sub?.status).toBe('PAUSED');
+    // Phase 11.5 — pause/resume only flip Subscription.status; User
+    // row's subscriptions[] is unchanged (admin-cancellation path
+    // would write the entry — pause is informational only).
     const after = await UserModel.findById(user._id);
-    expect(after?.tier).toBe('PRO');
+    expect(after?.subscriptions ?? []).toEqual([]);
   });
 
   it('onResumed → Subscription.status=ACTIVE', async () => {
