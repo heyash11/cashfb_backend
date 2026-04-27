@@ -25,3 +25,24 @@ export const SUBSCRIBABLE_TIER_VALUES = [
   'PRO',
   'PRO_MAX',
 ] as const satisfies readonly SubscribableTier[];
+
+const TIER_RANK: Record<Tier, number> = { PUBLIC: 0, PRO: 1, PRO_MAX: 2 };
+
+/**
+ * Phase 11.1 — hierarchical access predicate. PRO_MAX subscribers
+ * can vote in PRO_MAX/PRO/PUBLIC; PRO subscribers in PRO/PUBLIC;
+ * PUBLIC users in PUBLIC only.
+ *
+ * This matches the legacy `posts.service.ts.tierAllowsAccess` and
+ * `custom-rooms.service.ts.TIER_ORDER` semantics that gate single-
+ * tier list endpoints. Phase 11.5 will replace this with a
+ * subscriptions[]-based check on the User row, which flips the
+ * semantic from "subscribed to a higher tier grants lower-tier
+ * access" to "subscribed to a tier grants ONLY that tier" — the
+ * parallel-section product model. Don't generalize this helper
+ * across modules in 11.1; it lives here so the votes module can
+ * adopt the new helper without touching posts/custom-rooms.
+ */
+export function tierGrantsAccess(userTier: Tier, requestedTier: Tier): boolean {
+  return TIER_RANK[userTier] >= TIER_RANK[requestedTier];
+}

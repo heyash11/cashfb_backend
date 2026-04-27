@@ -58,19 +58,37 @@ afterEach(() => {
 
 describe('CastVoteBodySchema', () => {
   it('rejects whitespace-only target', () => {
-    const result = CastVoteBodySchema.safeParse({ target: '    ' });
+    const result = CastVoteBodySchema.safeParse({ target: '    ', tier: 'PUBLIC' });
     expect(result.success).toBe(false);
   });
 
   it('rejects target longer than 100 characters', () => {
-    const result = CastVoteBodySchema.safeParse({ target: 'a'.repeat(101) });
+    const result = CastVoteBodySchema.safeParse({ target: 'a'.repeat(101), tier: 'PUBLIC' });
     expect(result.success).toBe(false);
   });
 
   it('trims leading/trailing whitespace and accepts the inner string', () => {
-    const result = CastVoteBodySchema.safeParse({ target: '  option-alpha  ' });
+    const result = CastVoteBodySchema.safeParse({ target: '  option-alpha  ', tier: 'PUBLIC' });
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.target).toBe('option-alpha');
+  });
+
+  // Phase 11.1 — tier field
+  it('rejects body missing the tier field', () => {
+    const result = CastVoteBodySchema.safeParse({ target: 'alpha' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an invalid tier value', () => {
+    const result = CastVoteBodySchema.safeParse({ target: 'alpha', tier: 'PLATINUM' });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts each TIER_VALUES member', () => {
+    for (const tier of ['PUBLIC', 'PRO', 'PRO_MAX'] as const) {
+      const result = CastVoteBodySchema.safeParse({ target: 'alpha', tier });
+      expect(result.success).toBe(true);
+    }
   });
 });
 
@@ -86,6 +104,7 @@ describe('VoteService.castVote — happy path', () => {
 
     const result = await svc.castVote({
       userId: user._id,
+      tier: 'PUBLIC',
       target: 'option-alpha',
       ipAddress: '1.2.3.4',
       deviceFingerprint: 'fp-1',
@@ -133,12 +152,14 @@ describe('VoteService.castVote — concurrency', () => {
     const [a, b] = await Promise.allSettled([
       svc.castVote({
         userId: user._id,
+        tier: 'PUBLIC',
         target: 'alpha',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
       }),
       svc.castVote({
         userId: user._id,
+        tier: 'PUBLIC',
         target: 'beta',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
@@ -180,6 +201,7 @@ describe('VoteService.castVote — rollback', () => {
     await expect(
       svc.castVote({
         userId: user._id,
+        tier: 'PUBLIC',
         target: 'alpha',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
@@ -222,6 +244,7 @@ describe('VoteService.castVote — admin-block race', () => {
     await expect(
       svc.castVote({
         userId: user._id,
+        tier: 'PUBLIC',
         target: 'alpha',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
@@ -249,6 +272,7 @@ describe('VoteService.castVote — sequential rejects', () => {
 
     await svc.castVote({
       userId: user._id,
+      tier: 'PUBLIC',
       target: 'alpha',
       ipAddress: '1.1.1.1',
       deviceFingerprint: null,
@@ -257,6 +281,7 @@ describe('VoteService.castVote — sequential rejects', () => {
     await expect(
       svc.castVote({
         userId: user._id,
+        tier: 'PUBLIC',
         target: 'beta',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
@@ -277,6 +302,7 @@ describe('VoteService.castVote — sequential rejects', () => {
     await expect(
       svc.castVote({
         userId: user._id,
+        tier: 'PUBLIC',
         target: 'alpha',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
@@ -298,6 +324,7 @@ describe('VoteService.castVote — sequential rejects', () => {
     await expect(
       svc.castVote({
         userId: user._id,
+        tier: 'PUBLIC',
         target: 'alpha',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
@@ -314,6 +341,7 @@ describe('VoteService.castVote — sequential rejects', () => {
     await expect(
       svc.castVote({
         userId: new Types.ObjectId(),
+        tier: 'PUBLIC',
         target: 'alpha',
         ipAddress: '1.1.1.1',
         deviceFingerprint: null,
@@ -339,6 +367,7 @@ describe('VoteService.castVote — day-key rollover', () => {
 
     const first = await svc.castVote({
       userId: user._id,
+      tier: 'PUBLIC',
       target: 'alpha',
       ipAddress: '1.1.1.1',
       deviceFingerprint: null,
@@ -350,6 +379,7 @@ describe('VoteService.castVote — day-key rollover', () => {
 
     const second = await svc.castVote({
       userId: user._id,
+      tier: 'PUBLIC',
       target: 'beta',
       ipAddress: '1.1.1.1',
       deviceFingerprint: null,
@@ -382,6 +412,7 @@ describe('VoteService.getTodayStatus', () => {
     const before = Date.now();
     await svc.castVote({
       userId: user._id,
+      tier: 'PUBLIC',
       target: 'alpha',
       ipAddress: '1.1.1.1',
       deviceFingerprint: null,
@@ -424,5 +455,246 @@ describe('VoteService.getTodayStatus', () => {
     const status = await svc.getTodayStatus(user._id);
     expect(status.canVote).toBe(true);
     expect(status.usedAt).toBeUndefined();
+    // Phase 11.1 — tier echoed back, defaults to 'PUBLIC' when omitted.
+    expect(status.tier).toBe('PUBLIC');
+  });
+});
+
+// ---------------------------------------------------------------
+// Phase 11.1 — tier-aware behavior
+// ---------------------------------------------------------------
+
+describe('VoteService.castVote — tier authorization', () => {
+  it('PUBLIC user voting in PUBLIC succeeds; Vote.tier = PUBLIC', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+
+    const res = await svc.castVote({
+      userId: user._id,
+      tier: 'PUBLIC',
+      target: 'alpha',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+
+    expect(res.tier).toBe('PUBLIC');
+    const vote = await VoteModel.findOne({ userId: user._id });
+    expect(vote?.tier).toBe('PUBLIC');
+  });
+
+  it('PUBLIC user voting in PRO → TIER_NOT_ACCESSIBLE; no state change', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+
+    await expect(
+      svc.castVote({
+        userId: user._id,
+        tier: 'PRO',
+        target: 'alpha',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE', httpStatus: 403 });
+
+    expect(await VoteModel.countDocuments({ userId: user._id })).toBe(0);
+    const refreshed = await UserModel.findById(user._id);
+    expect(refreshed?.coinBalance).toBe(3);
+  });
+
+  it('PUBLIC user voting in PRO_MAX → TIER_NOT_ACCESSIBLE', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+
+    await expect(
+      svc.castVote({
+        userId: user._id,
+        tier: 'PRO_MAX',
+        target: 'alpha',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE' });
+  });
+
+  it('PRO user voting in PRO succeeds; Vote.tier = PRO', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 3, tier: 'PRO' });
+
+    const res = await svc.castVote({
+      userId: user._id,
+      tier: 'PRO',
+      target: 'alpha',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+
+    expect(res.tier).toBe('PRO');
+    const vote = await VoteModel.findOne({ userId: user._id });
+    expect(vote?.tier).toBe('PRO');
+  });
+
+  it('PRO user voting in PRO_MAX → TIER_NOT_ACCESSIBLE (hierarchical gating)', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 3, tier: 'PRO' });
+
+    await expect(
+      svc.castVote({
+        userId: user._id,
+        tier: 'PRO_MAX',
+        target: 'alpha',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE' });
+  });
+
+  it('PRO_MAX user can vote in PRO_MAX, PRO, and PUBLIC (parallel tier slots)', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 9, tier: 'PRO_MAX' });
+
+    for (const tier of ['PUBLIC', 'PRO', 'PRO_MAX'] as const) {
+      const res = await svc.castVote({
+        userId: user._id,
+        tier,
+        target: `target-${tier}`,
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      });
+      expect(res.tier).toBe(tier);
+    }
+
+    const votes = await VoteModel.find({ userId: user._id }).sort({ tier: 1 });
+    expect(votes.map((v) => v.tier).sort()).toEqual(['PRO', 'PRO_MAX', 'PUBLIC']);
+    const refreshed = await UserModel.findById(user._id);
+    expect(refreshed?.coinBalance).toBe(0); // 9 - (3 × 3) = 0
+    expect(refreshed?.totalVotesCast).toBe(3);
+  });
+
+  it('per-tier dedup: second PUBLIC vote same day → VOTE_ALREADY_CAST; PRO slot still open', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 9, tier: 'PRO' });
+
+    await svc.castVote({
+      userId: user._id,
+      tier: 'PUBLIC',
+      target: 'alpha',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+
+    await expect(
+      svc.castVote({
+        userId: user._id,
+        tier: 'PUBLIC',
+        target: 'beta',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      }),
+    ).rejects.toMatchObject({ code: 'VOTE_ALREADY_CAST' });
+
+    // PRO slot still independently fulfillable — proves cross-tier independence.
+    const proRes = await svc.castVote({
+      userId: user._id,
+      tier: 'PRO',
+      target: 'gamma',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+    expect(proRes.tier).toBe('PRO');
+
+    const refreshed = await UserModel.findById(user._id);
+    expect(refreshed?.coinBalance).toBe(3); // 9 - 3 - 3 = 3
+    expect(refreshed?.totalVotesCast).toBe(2);
+  });
+
+  it('error order: tier check fires BEFORE balance check (auth before payment)', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    // PUBLIC user with insufficient coins trying to vote in PRO. Both
+    // checks would fail; the tier check must surface first.
+    const user = await mkUser({ coinBalance: 0, tier: 'PUBLIC' });
+
+    await expect(
+      svc.castVote({
+        userId: user._id,
+        tier: 'PRO',
+        target: 'alpha',
+        ipAddress: '1.1.1.1',
+        deviceFingerprint: null,
+      }),
+    ).rejects.toMatchObject({ code: 'TIER_NOT_ACCESSIBLE' });
+  });
+});
+
+describe('VoteService.getTodayStatus — tier scoping', () => {
+  it('per-tier eligibility: voting in PUBLIC leaves PRO slot open', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 6, tier: 'PRO' });
+
+    await svc.castVote({
+      userId: user._id,
+      tier: 'PUBLIC',
+      target: 'alpha',
+      ipAddress: '1.1.1.1',
+      deviceFingerprint: null,
+    });
+
+    const pub = await svc.getTodayStatus(user._id, 'PUBLIC');
+    expect(pub.canVote).toBe(false);
+    expect(pub.tier).toBe('PUBLIC');
+    expect(pub.usedAt).toBeInstanceOf(Date);
+
+    const pro = await svc.getTodayStatus(user._id, 'PRO');
+    expect(pro.canVote).toBe(true);
+    expect(pro.tier).toBe('PRO');
+    expect(pro.usedAt).toBeUndefined();
+  });
+
+  it('no tier param defaults to PUBLIC and echoes tier in response', async () => {
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 3 });
+
+    const status = await svc.getTodayStatus(user._id);
+    expect(status.tier).toBe('PUBLIC');
+    expect(status.canVote).toBe(true);
+  });
+
+  it('tier=PRO_MAX query returns canVote:true even for a PUBLIC user (eligibility != access)', async () => {
+    // The /votes/today endpoint reports slot occupancy, not access.
+    // The cast endpoint enforces access. This separation lets the UI
+    // ask "does this user have a vote pending for PRO_MAX?" without
+    // also doing an authorization check.
+    const svc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
+    const user = await mkUser({ coinBalance: 3, tier: 'PUBLIC' });
+
+    const status = await svc.getTodayStatus(user._id, 'PRO_MAX');
+    expect(status.canVote).toBe(true);
+    expect(status.tier).toBe('PRO_MAX');
+  });
+});
+
+// ---------------------------------------------------------------
+// Phase 11.1 — tierGrantsAccess truth table (helper)
+// ---------------------------------------------------------------
+
+describe('tierGrantsAccess (Phase 11.1 hierarchical gate)', () => {
+  it('PUBLIC user grants only PUBLIC', async () => {
+    const { tierGrantsAccess } = await import('../../shared/models/_tier.js');
+    expect(tierGrantsAccess('PUBLIC', 'PUBLIC')).toBe(true);
+    expect(tierGrantsAccess('PUBLIC', 'PRO')).toBe(false);
+    expect(tierGrantsAccess('PUBLIC', 'PRO_MAX')).toBe(false);
+  });
+
+  it('PRO user grants PRO and PUBLIC', async () => {
+    const { tierGrantsAccess } = await import('../../shared/models/_tier.js');
+    expect(tierGrantsAccess('PRO', 'PUBLIC')).toBe(true);
+    expect(tierGrantsAccess('PRO', 'PRO')).toBe(true);
+    expect(tierGrantsAccess('PRO', 'PRO_MAX')).toBe(false);
+  });
+
+  it('PRO_MAX user grants all three', async () => {
+    const { tierGrantsAccess } = await import('../../shared/models/_tier.js');
+    expect(tierGrantsAccess('PRO_MAX', 'PUBLIC')).toBe(true);
+    expect(tierGrantsAccess('PRO_MAX', 'PRO')).toBe(true);
+    expect(tierGrantsAccess('PRO_MAX', 'PRO_MAX')).toBe(true);
   });
 });

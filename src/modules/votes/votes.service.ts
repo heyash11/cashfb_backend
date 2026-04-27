@@ -7,6 +7,7 @@ import {
   UnauthorizedError,
 } from '../../shared/errors/AppError.js';
 import type { CoinEventEmitter } from '../../shared/events/coinEvents.js';
+import { tierGrantsAccess, type Tier } from '../../shared/models/_tier.js';
 import { CoinTransactionRepository } from '../../shared/repositories/CoinTransaction.repository.js';
 import { UserRepository } from '../../shared/repositories/User.repository.js';
 import { VoteRepository } from '../../shared/repositories/Vote.repository.js';
@@ -35,43 +36,44 @@ export class VoteService {
   }
 
   /**
-   * Cast a once-per-day vote. See docs/BUILD_PLAN.md §Phase 3 +
-   * CONVENTIONS.md §Transactions — pitfalls and patterns.
+   * Cast a once-per-tier-per-day vote (Phase 11.1). See
+   * docs/BUILD_PLAN.md §Phase 3 + CONVENTIONS.md §Transactions —
+   * pitfalls and patterns.
    *
-   * Pre-transaction (fast-reject, no writes):
-   *   - UnauthorizedError if the user can't be found (token outlived user).
-   *   - ForbiddenError 'USER_BLOCKED' if the user is blocked.
-   *   - PaymentRequiredError 'INSUFFICIENT_COINS' if balance < VOTE_COST.
+   * Phase 11.1 — `tier` is now a required input. The vote is
+   * snapshotted with this tier on the row, and the unique index
+   * `{userId, tier, dayKey}` (Phase 11.0) makes per-tier dedup
+   * automatic. The user's `tier` field on the User row is the
+   * authoritative authorization source for now; Phase 11.5 will
+   * replace this with a subscriptions[] check.
    *
-   * Transaction (pattern 2 per CONVENTIONS.md — terminal throw on
-   * duplicate, no continuation):
-   *   1. voteRepo.insertIfAbsent(...) — duplicate → throw
-   *      'VOTE_ALREADY_CAST'. Transaction aborts by design.
-   *   2. userRepo.findOneAndUpdate with compound guard (balance + not
-   *      blocked). modifiedCount === 0 → throw 'INSUFFICIENT_COINS'
-   *      (this also catches the admin-block race between pre-read
-   *      and this write — blocked users surface as
-   *      INSUFFICIENT_COINS on the losing write; a retry hits the
-   *      pre-read block-check and surfaces USER_BLOCKED).
-   *   3. Insert coin_transactions VOTE_SPEND with balanceAfter and
-   *      reference.id = vote._id.
-   *   4. Commit.
-   *
-   * Post-transaction:
-   *   - Emit coins.updated.
+   * Error order (CONVENTIONS.md §HTTP error layering):
+   *   - 400 ValidationError       (Zod, controller layer)
+   *   - 401 UnauthorizedError      (user not found)
+   *   - 403 USER_BLOCKED           (admin-block)
+   *   - 403 TIER_NOT_ACCESSIBLE    (Phase 11.1 — auth before payment)
+   *   - 402 INSUFFICIENT_COINS     (balance + admin-block race)
+   *   - 409 VOTE_ALREADY_CAST      (mongo dup key on the tier slot)
    */
   async castVote(input: {
     userId: Types.ObjectId;
+    tier: Tier;
     target: string;
     ipAddress: string;
     deviceFingerprint: string | null;
-  }): Promise<{ coinBalance: number; dayKey: string }> {
+  }): Promise<{ coinBalance: number; dayKey: string; tier: Tier }> {
     const dayKey = dayKeyIst(nowIst());
 
     const user = await this.userRepo.findById(input.userId);
     if (!user) throw new UnauthorizedError('User not found');
     if (user.blocked.isBlocked) {
       throw new ForbiddenError('USER_BLOCKED', 'Account is blocked');
+    }
+    if (!tierGrantsAccess(user.tier, input.tier)) {
+      throw new ForbiddenError(
+        'TIER_NOT_ACCESSIBLE',
+        `Subscription required to vote in ${input.tier}`,
+      );
     }
     if (user.coinBalance < VOTE_COST) {
       throw new PaymentRequiredError('INSUFFICIENT_COINS', `Need ${VOTE_COST} coins to vote`);
@@ -82,6 +84,7 @@ export class VoteService {
       const result = await session.withTransaction<{
         coinBalance: number;
         dayKey: string;
+        tier: Tier;
       }>(async () => {
         // Pattern 2 (CONVENTIONS.md "Transactions — pitfalls and patterns"):
         // terminal throw on duplicate. Transaction is intended to abort and
@@ -89,6 +92,7 @@ export class VoteService {
         const voteData: Record<string, unknown> = {
           userId: input.userId,
           dayKey,
+          tier: input.tier,
           target: input.target,
           coinsSpent: VOTE_COST,
           ipAddress: input.ipAddress,
@@ -97,7 +101,7 @@ export class VoteService {
 
         const vote = await this.voteRepo.insertIfAbsent(voteData, { session });
         if (!vote) {
-          throw new ConflictError('VOTE_ALREADY_CAST', 'Already voted today');
+          throw new ConflictError('VOTE_ALREADY_CAST', 'Already voted in this tier today');
         }
 
         // Atomic decrement with compound guard: balance AND not blocked.
@@ -130,7 +134,7 @@ export class VoteService {
           { session },
         );
 
-        return { coinBalance: updated.coinBalance, dayKey };
+        return { coinBalance: updated.coinBalance, dayKey, tier: input.tier };
       });
 
       if (!result) {
@@ -150,19 +154,34 @@ export class VoteService {
   }
 
   /**
-   * Today's vote status for the home feed's "vote" card. Returns
-   * `canVote: false` if there's already a vote with today's dayKey,
-   * `canVote: true` otherwise. `usedAt` is the vote's createdAt when
-   * present.
+   * Today's vote status for the home feed's "vote" card, scoped to
+   * a tier section (Phase 11.1).
+   *
+   * Access-blind by design: returns `canVote:true` for any empty
+   * slot regardless of the caller's subscription. The cast
+   * endpoint enforces TIER_NOT_ACCESSIBLE at write time. This
+   * separation lets the UI render slot occupancy ("you have a
+   * vote pending in PRO_MAX") without a secondary auth call.
+   *
+   * `tier` is optional on the wire (defaults to 'PUBLIC' for pre-
+   * 11.1 client backwards compat) but always echoed back in the
+   * response so the client can render the correct slot's eligibility
+   * unambiguously (§A7 / §R1 — required field on response).
+   *
+   * Returns `canVote: false` if there's already a vote for THIS
+   * tier on today's dayKey, `canVote: true` otherwise. Per-tier
+   * slots are independent — voting in PUBLIC doesn't affect PRO
+   * eligibility, etc.
    */
   async getTodayStatus(
     userId: Types.ObjectId,
-  ): Promise<{ canVote: boolean; usedAt?: Date; dayKey: string }> {
+    tier: Tier = 'PUBLIC',
+  ): Promise<{ canVote: boolean; usedAt?: Date; dayKey: string; tier: Tier }> {
     const dayKey = dayKeyIst(nowIst());
-    const vote = await this.voteRepo.findByUserDay(userId, dayKey);
+    const vote = await this.voteRepo.findByUserDayTier(userId, tier, dayKey);
     if (vote) {
-      return { canVote: false, usedAt: vote.createdAt, dayKey };
+      return { canVote: false, usedAt: vote.createdAt, dayKey, tier };
     }
-    return { canVote: true, dayKey };
+    return { canVote: true, dayKey, tier };
   }
 }

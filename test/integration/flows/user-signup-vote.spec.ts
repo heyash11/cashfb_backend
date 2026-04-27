@@ -86,11 +86,13 @@ describe('[integration] user signup + vote flow', () => {
     const voteSvc = new VoteService({ coinEvents: new NoopCoinEventEmitter() });
     const voteRes = await voteSvc.castVote({
       userId: new Types.ObjectId(signupResult.user.id),
+      tier: 'PUBLIC',
       target: 'post-smoke-integration',
       ipAddress,
       deviceFingerprint,
     });
     expect(voteRes.coinBalance).toBe(0); // 3 - 3 vote cost
+    expect(voteRes.tier).toBe('PUBLIC');
 
     // 4. Verify transactional invariant — both writes landed.
     const userRow = await UserModel.findById(signupResult.user.id);
@@ -117,6 +119,7 @@ describe('[integration] user signup + vote flow', () => {
     await expect(
       voteSvc.castVote({
         userId: new Types.ObjectId(signupResult.user.id),
+        tier: 'PUBLIC',
         target: 'post-smoke-integration',
         ipAddress,
         deviceFingerprint,
