@@ -65,7 +65,7 @@ Currently donations are tracked, sponsor logos are placeholder until owner provi
 
 §PD4 — Subscription duration: verify backend's current default is 1 week, not 1 month. Update if needed.
 
-§PD5 — Tier multiplier on vote weight: when a Pro user votes, backend currently records the same vote-weight regardless of tier. Need to add tier multiplier to vote service.
+§PD5 — RESOLVED 2026-04-26 (Phase 10.1): tier-aware prize pool computation now reads `proMultiplier` and `proMaxMultiplier` from AppConfig and applies them via a `$lookup` aggregation against the users collection. PRO votes weigh 5× and PRO_MAX votes weigh 10× by default; both knobs are admin-tunable via PATCH /api/v1/admin/app-config. Live-lookup posture: tier is read at compute time (00:05 IST), so a downgrade-before-midnight loses the multiplier on the next pool. DPDP-anonymized voters whose User row was tombstoned still fund the pool at PUBLIC weight.
 
 §PD6 — Custom room result reveal: backend lacks the "30-min post-match reveal" gating. Result endpoint should return "pending" for 30 min after match start.
 
@@ -73,8 +73,10 @@ Currently donations are tracked, sponsor logos are placeholder until owner provi
 
 §PD8 — Bottom nav UX: do Public users see grayed Pro/Pro Max tabs (with "upgrade to access"), or hidden tabs?
 
+§PD9 — Vote.target FK convention: backend Vote schema treats `target` as an opaque string (no validation, no FK index). Flutter MUST enforce the convention: `target` is a Post `_id` hex when voting on a redeem-code drop, and a CustomRoom `_id` hex when voting on a custom-room target. Backend will not reject a malformed target — it will simply never resolve to a payout. Validate at write time on the client.
+
 ## Reference dates
 
 - Product model documented: 2026-04-26
-- Last updated: 2026-04-26
+- Last updated: 2026-04-26 (§PD5 resolved; §PD9 added)
 - Owner: Ashutosh "Ashhu" Patil

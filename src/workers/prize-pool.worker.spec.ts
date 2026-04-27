@@ -16,10 +16,12 @@ function fakeService(impl?: (input: ComputeAndPublishInput) => Promise<ComputeAn
         ({
           created: true,
           yesterdayVoteCount: 0,
+          weightedVoteUnits: 0,
           baseRatePaise: 100,
           totalPoolPaise: 0,
           giftCodeBudgetPaise: 0,
           customRoomBudgetPaise: 0,
+          tierBreakdown: { public: 0, pro: 0, proMax: 0 },
         }) satisfies ComputeAndPublishResult),
   );
   return { service: { computeAndPublishPool: spy } as unknown as PrizePoolService, spy };
@@ -44,10 +46,12 @@ describe('prize-pool worker handler', () => {
     const { service } = fakeService(async () => ({
       created: false,
       yesterdayVoteCount: 100,
+      weightedVoteUnits: 140, // 80 PUBLIC + 10 PRO + 1 PRO_MAX = 80 + 50 + 10
       baseRatePaise: 100,
-      totalPoolPaise: 10_000,
-      giftCodeBudgetPaise: 7_000,
-      customRoomBudgetPaise: 3_000,
+      totalPoolPaise: 14_000,
+      giftCodeBudgetPaise: 9_800,
+      customRoomBudgetPaise: 4_200,
+      tierBreakdown: { public: 80, pro: 10, proMax: 1 },
     }));
     const handler = createPrizePoolHandler({ service });
 
@@ -55,10 +59,12 @@ describe('prize-pool worker handler', () => {
     expect(result).toEqual({
       created: false,
       yesterdayVoteCount: 100,
+      weightedVoteUnits: 140,
       baseRatePaise: 100,
-      totalPoolPaise: 10_000,
-      giftCodeBudgetPaise: 7_000,
-      customRoomBudgetPaise: 3_000,
+      totalPoolPaise: 14_000,
+      giftCodeBudgetPaise: 9_800,
+      customRoomBudgetPaise: 4_200,
+      tierBreakdown: { public: 80, pro: 10, proMax: 1 },
     });
   });
 
